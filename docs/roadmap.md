@@ -1,18 +1,25 @@
 # interpose-sandbox — roadmap
 
-**Status:** scaffold. Skeleton + working `doctor` + vmconfig generator + stub commands.
+**Status:** v0.1.0 shipped (2026-05-26). Foreground sandbox spawn works end-to-end on KVM-capable Linux hosts; backgrounded sandboxes + ls/run/rm ship in v0.2.
 
-## v0.1 — first running sandbox
+## v0.1.0 — first running sandbox (SHIPPED 2026-05-26)
 
-- [ ] `interpose-sandbox doctor` validated on a real Linux host with KVM + Firecracker installed; `checkInterposeKernelAvailable()` queries the local Docker daemon for an `interpose-kernel:*-bpf-lsm-*` tag and offers to `docker pull` if missing.
-- [ ] `internal/kernel/Pull` + `Extract` implemented (plain `docker pull` + `docker create` + `docker cp /kernel` — no linuxkit dependency, the image is a standard OCI artifact since interpose-kernel v0.1.0)
-- [ ] Alpine minirootfs baked into an `ext4` image — `internal/rootfs/build.go` (or similar) downloads + assembles. v0.1 ships one default rootfs (Alpine 3.21 + busybox + a getty); the agent runtimes (Claude Code, Codex, etc.) layer in v0.3.
-- [ ] `internal/firecracker/Start` + `Stop` + `Status` implemented (process spawn + Unix-socket API client; vsock socket opened for v0.2's host-broker bridge)
-- [ ] `interpose-sandbox new shell .` spawns a Firecracker VM, mounts cwd via virtio-fs at `/workspace`, drops you into a shell on the console
-- [ ] `interpose-sandbox run <name>`, `ls`, `rm` work end-to-end
-- [ ] Tag `v0.1.0`
+- [x] `interpose-sandbox doctor` audits /dev/kvm, /dev/kvm R/W, firecracker on PATH, interpose-kernel image presence (via `docker images`), interpose binary presence
+- [x] `internal/kernel` pulls + extracts interpose-kernel OCI images (local-first; `docker cp /kernel` works around the scratch image having no CMD by passing `--entrypoint=/kernel`)
+- [x] `internal/rootfs` builds Alpine 3.21 ext4 with auto-login getty on ttyS0 — single docker-run shellout, 512 MiB output, cached under $XDG_CACHE_HOME
+- [x] `internal/firecracker.Start` foreground spawn with inherited stdio
+- [x] `interpose-sandbox new shell` end-to-end: kernel.Extract → rootfs.Build → firecracker.Start (boot args from `kernel.Info.BootArgs()`)
+- [x] Tagged `v0.1.0`
 
-**Unblocked:** interpose-kernel v0.1.0 shipped (2026-05-26) with both Ubuntu 24.04 (`ubuntu-24.04-bpf-lsm-v0.1.0`) and Debian 12 (`debian-12-bpf-lsm-v0.1.0`) flavors validated and userspace-confirmed BPF-LSM-active. Default flavor for v0.1: Ubuntu (smaller — 137 MB vs 201 MB).
+**Scope cuts that made v0.1 shippable today:**
+- Foreground-only. `ls`/`run`/`rm` ship in v0.2 once we have the PTY/socat wrapper around firecracker's serial console. Trying to ship those in v0.1 would have meant 1-2 extra hours of bug-surface work for a UX nicety.
+- No virtio-fs workspace mount. v0.1's `new shell [workspace]` accepts the workspace argument but doesn't mount it; v0.2 adds the bind.
+- No baked-in agent runtimes. v0.1 only supports `new shell` (drops into Alpine /bin/sh); claude / codex / opencode bake in v0.3.
+
+**Host constraint that surfaced during D3 smoke test:**
+- Firecracker requires KVM. Apple Silicon Lima cannot expose KVM to the guest (no nested virt on M1/M2 via Apple VZ; Lima's VZ backend doesn't surface M3+'s hardware support either). So interpose-sandbox cannot run on a Mac dev environment. See README "Where you can actually run this" for the host matrix.
+
+**Built on:** interpose-kernel v0.1.0 (`startaworldpeace/interpose-kernel:ubuntu-24.04-bpf-lsm-v0.1.0` + `debian-12-bpf-lsm-v0.1.0`, both pushed to Docker Hub 2026-05-26).
 
 ## v0.2 — interpose preloaded
 

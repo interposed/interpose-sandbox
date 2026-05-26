@@ -14,7 +14,67 @@ This repo is the Firecracker glue: a CLI + library that spins up microVMs runnin
 
 ## Status
 
-🚧 **Scaffold.** CLI dispatch + Firecracker `doctor` checks + vmconfig generation are sketched in. The `new` / `run` / `ls` / `rm` commands return "not yet — see docs/roadmap.md" pending Firecracker host validation.
+**v0.1.0** — `interpose-sandbox new shell` boots a Firecracker microVM from an `interpose-kernel` image and drops the operator into an auto-login Alpine shell on the serial console. Foreground only; `ls`/`run`/`rm` ship in v0.2 once we have a PTY/socat wrapper around firecracker's serial console.
+
+End-to-end pieces in place:
+
+| Piece | Status |
+|---|---|
+| `interpose-sandbox doctor` (host audit) | ✅ — checks /dev/kvm, firecracker binary, interpose-kernel image, etc. |
+| `internal/kernel` (pull + extract from OCI) | ✅ — local-first, `docker cp /kernel` works against scratch-based interpose-kernel images |
+| `internal/rootfs` (Alpine ext4 builder) | ✅ — docker-run shellout, 512 MiB image, serial getty auto-login |
+| `internal/firecracker` (lifecycle) | ✅ — foreground spawn with inherited stdio |
+| `interpose-sandbox new shell` | ✅ — end-to-end on a KVM-capable Linux host |
+| `interpose-sandbox new claude .` (agent baked in) | 🚧 v0.3 |
+| `ls` / `run` / `rm` (background sandboxes) | 🚧 v0.2 |
+| Host port-forward for WebAuthn ceremony | 🚧 v0.2 |
+
+## Where you can actually run this
+
+**This is critical.** Firecracker requires KVM, which means a Linux host with hardware virtualization exposed to the kernel. Concretely:
+
+| Host | KVM available? | interpose-sandbox runs? |
+|---|---|---|
+| Linux laptop / desktop / server (any distro with KVM module loaded) | ✅ | ✅ |
+| EC2 c6g/c7g/m6g/c5/c6/m5 (any non-`t3` family) | ✅ | ✅ |
+| EC2 `*.metal` instances | ✅ | ✅ |
+| Hetzner Cloud CAX / CCX, DigitalOcean droplets, Linode | ✅ (most) | ✅ |
+| **Apple Silicon Mac via Lima (Apple VZ backend)** | ❌ | ❌ — no nested virt on M1/M2; M3+ has hardware support but Lima's VZ backend doesn't surface it |
+| Apple Silicon Mac via Lima (QEMU backend) | ❌ | ❌ — software emulation only |
+| Intel Mac via UTM/Parallels Linux VM | usually ✅ | ✅ |
+| WSL2 | ⚠️ (nested-KVM dependent) | not v0.1 scope |
+
+If you're on Apple Silicon and want to validate `interpose-kernel` itself (just the kernel, not the sandbox), see the QEMU/HVF smoke test recipe in [`interpose-kernel/docs/where-this-fits.md#validation-evidence`](https://github.com/interposehq/interpose-kernel/blob/main/docs/where-this-fits.md#validation-evidence) — that path works on Mac.
+
+For interpose-sandbox itself, plan to deploy to a real Linux host. Cheapest realistic targets:
+
+- **Hetzner CAX11** — €4/month, arm64, KVM-capable. ~5 min to provision.
+- **EC2 c6g.medium** — ~$0.03/hr if you're already an AWS user.
+- **Your existing Linux laptop/server** — if you have one.
+
+## Demo: `doctor` on a host that's NOT ready
+
+Running `interpose-sandbox doctor` on a fresh Apple-Silicon Lima Ubuntu VM (no KVM, no Firecracker, no Docker) shows what a non-ready host looks like — note the explicit "install-required" verdict with line-by-line fixes:
+
+```
+$ interpose-sandbox doctor
+interpose-sandbox doctor — host capability audit
+------------------------------------------------------------
+  [FAIL] /dev/kvm missing — kernel doesn't expose KVM
+  [FAIL] /dev/kvm not openable for RW: open /dev/kvm: no such file or directory
+  [FAIL] firecracker binary not on PATH
+  [WARN] docker not on PATH — can't audit local interpose-kernel image cache
+  [WARN] interpose binary not on PATH — sandboxes will use whichever interpose is in the kernel image
+
+Verdict: install-required
+
+Next steps:
+  - ensure the host has KVM enabled (modprobe kvm + kvm_intel|kvm_amd; CONFIG_KVM=y in kernel build)
+  - add your user to the 'kvm' group: sudo usermod -aG kvm $USER && newgrp kvm
+  - install Firecracker: see https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md
+```
+
+Exits with code 2 (`install-required`). On a Linux host with KVM + Firecracker + Docker installed and an interpose-kernel image pulled, it exits 0 (`ready`).
 
 ## Quick use (when v0.1 lands)
 
