@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 // runDoctor audits the Firecracker host prerequisites: KVM device,
@@ -144,16 +145,54 @@ func checkFirecrackerInstalled() check {
 	}
 }
 
+// checkInterposeKernelAvailable verifies that at least one interpose-kernel
+// image is present in the local Docker daemon. We accept any tag matching
+// `*interpose-kernel*:*-bpf-lsm-*` so the user can mix flavors freely.
+//
+// We deliberately do NOT pull the image automatically here — `doctor` is
+// for audit, not side-effects. We tell the operator which command to run.
 func checkInterposeKernelAvailable() check {
-	// Stub: in v0.1 this consults `docker images` or the local
-	// $XDG_CACHE_HOME/interpose-sandbox/kernels/ directory. For now,
-	// emit a WARN so doctor still reports a sensible verdict during scaffold.
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		return check{
+			status: "WARN",
+			detail: "docker not on PATH — can't audit local interpose-kernel image cache",
+			fix:    "install docker (interpose-sandbox uses it to pull the kernel image)",
+		}
+	}
+	out, err := exec.Command(dockerPath, "images",
+		"--format", "{{.Repository}}:{{.Tag}}").Output()
+	if err != nil {
+		return check{
+			status: "WARN",
+			detail: fmt.Sprintf("`docker images` failed: %v", err),
+			fix:    "ensure the docker daemon is running",
+		}
+	}
+	var matches []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.Contains(line, "interpose-kernel") && strings.Contains(line, "bpf-lsm") {
+			matches = append(matches, line)
+		}
+	}
+	if len(matches) == 0 {
+		return check{
+			status: "FAIL",
+			detail: "no interpose-kernel:*-bpf-lsm-* image found in local docker cache",
+			fix: "pull the default kernel: docker pull " +
+				"startaworldpeace/interpose-kernel:ubuntu-24.04-bpf-lsm-v0.1.0",
+		}
+	}
+	if len(matches) == 1 {
+		return check{status: "OK", detail: "interpose-kernel cached: " + matches[0]}
+	}
 	return check{
-		status: "WARN",
-		detail: "interpose-kernel image: presence check not yet implemented",
-		fix:    "v0.1: will check `docker images | grep interpose-kernel` and offer to pull",
+		status: "OK",
+		detail: fmt.Sprintf("interpose-kernel cached (%d tags): %s",
+			len(matches), matches[0]+", ..."),
 	}
 }
+
 
 func checkInterposeBinaryAvailable() check {
 	if _, err := exec.LookPath("interpose"); err == nil {

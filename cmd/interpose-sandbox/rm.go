@@ -1,11 +1,11 @@
 package main
 
 func runRm(args []string) {
-	// Planned v0.1:
-	//   interpose-sandbox rm <name>
-	//
-	// Sends SIGTERM to the Firecracker process (PID from state dir),
-	// waits for clean shutdown (or escalates to SIGKILL), removes the
-	// sandbox's state directory + virtual disk images.
-	notImplemented("rm")
+	// v0.1: sandboxes are foreground (Ctrl-C terminates the VM and
+	// returns control to the shell), so there's nothing to "remove."
+	// State directories under $XDG_STATE_HOME/interpose-sandbox/ persist
+	// between runs for post-mortem inspection — `rm -rf` them manually
+	// for now. v0.2 turns this into a proper subcommand alongside
+	// background sandboxes.
+	notImplemented("rm (v0.2 — requires background sandboxes)")
 }
