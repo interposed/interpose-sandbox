@@ -1,0 +1,30 @@
+# Build outputs
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS detritus
+.DS_Store
+Thumbs.db
+
+# Local config
+.env
+.env.*
+.envrc
+
+# Runtime state (sandbox metadata, PID files, sockets, disk images)
+state/
+*.sock
+*.pid
+*.qcow2
+*.ext4
+*.img
