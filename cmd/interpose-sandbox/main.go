@@ -44,12 +44,26 @@ func main() {
 		runDoctor(args)
 	case "new", "create":
 		runNew(args)
-	case "run", "attach":
+	case "run":
 		runRun(args)
 	case "ls", "list":
 		runLs(args)
 	case "rm", "remove":
 		runRm(args)
+	case "fork":
+		runFork(args)
+	case "pause":
+		runPause(args)
+	case "resume":
+		runResume(args)
+	case "exec":
+		runExec(args)
+	case "attach":
+		runAttach(args)
+	case "session":
+		runSession(args)
+	case "agent":
+		runAgent(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:

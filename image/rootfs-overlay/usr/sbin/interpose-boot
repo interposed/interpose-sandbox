@@ -1,0 +1,29 @@
+#!/bin/sh
+# interpose-sandbox boot (PID-1 sysinit): bring up the VM, then start the
+# interpose enforcer + the vsock guest-agent.
+#
+# Licensing: the operator INJECTS /var/lib/interpose/{license.json,device.key}
+# into the sandbox before boot (reusing its own activation). No online
+# activation, no key typed by a user, no network needed — the enforcer just
+# finds a valid license. The interpose binary here is built with the public
+# license key baked in (ldflags pubkeyB64).
+BB=/bin/busybox
+$BB mount -t proc     proc     /proc                 2>/dev/null
+$BB mount -t sysfs    sysfs    /sys                  2>/dev/null
+$BB mount -t devtmpfs devtmpfs /dev                  2>/dev/null
+$BB mount -t securityfs securityfs /sys/kernel/security 2>/dev/null
+$BB mount -t bpf      bpf      /sys/fs/bpf           2>/dev/null
+$BB mount -t cgroup2  cgroup2  /sys/fs/cgroup        2>/dev/null
+$BB mkdir -p /run /var/log 2>/dev/null
+$BB mount -t tmpfs tmpfs /run 2>/dev/null
+$BB hwclock -s 2>/dev/null           # clock from the RTC (Firecracker/QEMU provide it)
+/sbin/interpose-workspace 2>/dev/null
+$BB ip link set lo up 2>/dev/null
+# vsock transport (CONFIG_VIRTIO_VSOCKETS=m) so the guest-agent can listen
+$BB modprobe vmw_vsock_virtio_transport 2>/dev/null
+export HOME=/root
+# The kernel-level enforcer (gates every syscall for wrapped agents).
+/usr/local/bin/interpose serve >/var/log/interpose-serve.log 2>&1 &
+# The vsock guest-agent (host drives it to launch agents under `interpose run`
+# and stream their PTYs to the operator's embedded terminal).
+/sbin/interpose-guest >/var/log/interpose-guest.log 2>&1 &

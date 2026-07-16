@@ -1,0 +1,6 @@
+#!/bin/sh
+# Format (first boot) + mount the /dev/vdb workspace block device at /workspace.
+[ -b /dev/vdb ] || exit 0
+/bin/busybox blkid /dev/vdb >/dev/null 2>&1 || mkfs.ext4 -q -F /dev/vdb 2>/dev/null
+/bin/busybox mkdir -p /workspace
+/bin/busybox mount /dev/vdb /workspace

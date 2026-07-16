@@ -1,0 +1,18 @@
+#!/bin/sh
+# Validation-only PID-1: boot the sandbox, then report whether the enforcer,
+# the guest-agent, pi, and the (injected) license all came up — and power off.
+# Used ONLY when the kernel is booted with init=/sbin/interpose-selftest; the
+# normal init is busybox + /etc/inittab. Harmless to ship.
+export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
+/sbin/interpose-boot
+BB=/bin/busybox
+$BB sleep 12
+echo "===== INTERPOSE SANDBOX SELFTEST ====="
+echo "clock: $($BB date -u)"
+echo "--- interpose serve log (enforcer) ---"; $BB head -40 /var/log/interpose-serve.log 2>/dev/null
+echo "--- guest-agent log ---"; $BB head -8 /var/log/interpose-guest.log 2>/dev/null
+echo "--- pi ---"; if command -v pi >/dev/null 2>&1; then pi --version 2>&1 | $BB head -1; else echo "pi MISSING"; fi
+echo "--- interpose ---"; /usr/local/bin/interpose version 2>&1 | $BB head -1
+echo "--- license status ---"; /usr/local/bin/interpose license status 2>&1 | $BB head -3
+echo "===== END SELFTEST ====="
+$BB poweroff -f

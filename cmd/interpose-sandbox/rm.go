@@ -1,11 +1,31 @@
 package main
 
+import (
+	"flag"
+	"fmt"
+	"os"
+	"syscall"
+)
+
+// runRm destroys a sandbox: kills its firecracker process, wipes its state
+// directory, and drops it from the registry.
 func runRm(args []string) {
-	// v0.1: sandboxes are foreground (Ctrl-C terminates the VM and
-	// returns control to the shell), so there's nothing to "remove."
-	// State directories under $XDG_STATE_HOME/interpose-sandbox/ persist
-	// between runs for post-mortem inspection — `rm -rf` them manually
-	// for now. v0.2 turns this into a proper subcommand alongside
-	// background sandboxes.
-	notImplemented("rm (v0.2 — requires background sandboxes)")
+	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		die("usage: interpose-sandbox rm <id>")
+	}
+	id := fs.Arg(0)
+	reg := openRegistry()
+	sb := mustGet(reg, id)
+	if sb.PID > 0 && pidAlive(sb.PID) {
+		_ = syscall.Kill(sb.PID, syscall.SIGKILL)
+	}
+	if sb.StateDir != "" {
+		_ = os.RemoveAll(sb.StateDir)
+	}
+	if err := reg.Remove(id); err != nil {
+		die("registry remove: %v", err)
+	}
+	fmt.Printf("removed %s\n", sb.Name)
 }

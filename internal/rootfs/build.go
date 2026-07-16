@@ -108,17 +108,35 @@ apk --root /rootfs --initdb \
     -X https://dl-cdn.alpinelinux.org/alpine/v` + AlpineVersion + `/main \
     -X https://dl-cdn.alpinelinux.org/alpine/v` + AlpineVersion + `/community \
     --allow-untrusted \
-    add alpine-base
+    add alpine-base e2fsprogs
 
 # Serial console: respawn an auto-login root shell on ttyS0 so the
 # operator's "interpose-sandbox run" socat into Firecracker's console
 # socket drops directly into a usable shell. No login prompt — the
 # sandbox itself IS the security boundary; the operator's host owns
 # whatever passkey/yubikey gating happens via the interpose broker.
+# Workspace mount helper: format (first boot) + mount the /dev/vdb block device
+# at /workspace. Firecracker has no virtio-fs, so the workspace is a block device.
+cat > /rootfs/sbin/interpose-workspace <<'EOF'
+#!/bin/sh
+[ -b /dev/vdb ] || exit 0
+blkid /dev/vdb >/dev/null 2>&1 || mkfs.ext4 -q -F /dev/vdb
+mkdir -p /workspace
+mount /dev/vdb /workspace
+EOF
+chmod +x /rootfs/sbin/interpose-workspace
+
+# NOTE: /sbin/interpose-guest (the vsock guest-agent that launches agents under
+# interpose + streams their PTYs) is baked into the published AGENT IMAGE in CI
+# (a deployed host has no Go toolchain to compile it at runtime). This fallback
+# Alpine rootfs ships without it — the inittab line below no-ops (sleeps) if it's
+# absent, so this image still boots to a serial shell.
 cat > /rootfs/etc/inittab <<'EOF'
 ::sysinit:/sbin/openrc sysinit
 ::sysinit:/sbin/openrc boot
+::sysinit:/sbin/interpose-workspace
 ::wait:/sbin/openrc default
+::respawn:/bin/sh -c '[ -x /sbin/interpose-guest ] && exec /sbin/interpose-guest || sleep 3600'
 ttyS0::respawn:/sbin/getty -L -n -l /bin/sh 115200 ttyS0 vt100
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/sbin/openrc shutdown
