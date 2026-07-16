@@ -58,6 +58,16 @@ examples:
 		if sbName == "" {
 			sbName = "sb-" + time.Now().UTC().Format("20060102-150405")
 		}
+		if localPTYMode() {
+			sb := newLocalSandbox(sbName, *profile, *workspace)
+			reg := openRegistry()
+			if err := reg.Add(sb); err != nil {
+				die("registry: %v", err)
+			}
+			fmt.Fprintln(os.Stderr, "==> [local-pty dev-mode] registered sandbox without booting a microVM")
+			printJSON(toWire(sb))
+			return
+		}
 		sb, err := bootDetached(sbName, *profile, *workspace, *rootfsImage)
 		if err != nil {
 			die("boot: %v", err)

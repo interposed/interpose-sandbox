@@ -64,6 +64,19 @@ func runExec(args []string) {
 	id, kind := fs.Arg(0), fs.Arg(1)
 	reg := openRegistry()
 	sb := mustGet(reg, id)
+	if localPTYMode() {
+		// No guest to launch into — record the agent so the operator can list
+		// and Open it; `attach` will serve a local shell.
+		ag := registry.Agent{ID: newID("agt"), Kind: kind, Status: "ready", CreatedAt: time.Now(), Last: "started (local-pty)"}
+		if err := reg.Update(id, func(s *registry.Sandbox) error {
+			s.Agents = append(s.Agents, ag)
+			return nil
+		}); err != nil {
+			die("registry: %v", err)
+		}
+		printJSON(map[string]any{"id": ag.ID, "kind": ag.Kind, "status": ag.Status})
+		return
+	}
 	// Launch the agent INSIDE the VM under `interpose run` via the guest-agent
 	// over vsock. The guest keeps it alive (with scrollback); `attach` streams
 	// its PTY later. The guest assigns the id we record, so attach can find it.
@@ -92,6 +105,10 @@ func runAttach(args []string) {
 		die("usage: interpose-sandbox attach <sandbox> <agent>")
 	}
 	id, agID := fs.Arg(0), fs.Arg(1)
+	if localPTYMode() {
+		attachLocalShell()
+		return
+	}
 	reg := openRegistry()
 	sb := mustGet(reg, id)
 	conn, _, err := guestclient.Dial(sb.VsockUDS, vsockproto.Request{Op: "attach", ID: agID})
