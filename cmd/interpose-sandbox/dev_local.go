@@ -46,18 +46,31 @@ func newLocalSandbox(name, profile, workspace string) registry.Sandbox {
 // The daemon's ptyRelay pumps this identically to the guest PTY, so keystrokes
 // and output travel the real Noise path to the operator's embedded xterm.
 func attachLocalShell() {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash"
+	// Host-agent terminal: when the daemon sets INTERPOSE_SANDBOX_PTY_CMD, run
+	// THAT command in the PTY instead of a login shell — this is how
+	// `interpose run pi` (a host agent under enforcement) streams to the
+	// operator's xterm. The command inherits our env, so the agent's API key
+	// (set by the daemon alongside PTY_CMD) reaches it.
+	var cmd *exec.Cmd
+	if hostCmd := os.Getenv("INTERPOSE_SANDBOX_PTY_CMD"); hostCmd != "" {
+		cmd = exec.Command("/bin/sh", "-c", hostCmd)
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	} else {
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/bash"
+		}
+		cmd = exec.Command(shell, "-i")
+		cmd.Env = append(os.Environ(), "PS1=sandbox$ ", "TERM=xterm-256color")
 	}
-	cmd := exec.Command(shell, "-i")
-	cmd.Env = append(os.Environ(), "PS1=sandbox$ ", "TERM=xterm-256color")
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		die("local pty: %v", err)
 	}
 	defer func() { _ = ptmx.Close() }()
-	fmt.Fprintln(ptmx, "echo '[local-pty dev-mode] live shell — this is NOT a real sandbox'")
+	if os.Getenv("INTERPOSE_SANDBOX_PTY_CMD") == "" {
+		fmt.Fprintln(ptmx, "echo '[local-pty dev-mode] live shell — this is NOT a real sandbox'")
+	}
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
 	_, _ = io.Copy(os.Stdout, ptmx)
 	_ = cmd.Wait()
