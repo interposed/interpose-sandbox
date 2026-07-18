@@ -42,6 +42,8 @@ func main() {
 	switch os.Args[1] {
 	case "doctor":
 		runDoctor(args)
+	case "fix":
+		runFix(args)
 	case "new", "create":
 		runNew(args)
 	case "run":
