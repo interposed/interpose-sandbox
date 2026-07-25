@@ -89,6 +89,17 @@ func (b *nonoBackend) Apply(p PolicySpec) (Result, error) {
 		}
 	}
 
+	// Operation baseline (macOS): grant the non-filesystem Seatbelt operations a
+	// real runtime needs — fork/exec, mach services, sysctls, shared memory,
+	// signals, ptys — mirroring nono's agent profile. Deny-default still blocks
+	// the filesystem; the trailing keychain denies keep secrets unreachable.
+	// No-op on Linux (Landlock doesn't govern these syscalls).
+	for _, rule := range agentPlatformRules() {
+		if err := caps.AddPlatformRule(rule); err != nil {
+			return res, fmt.Errorf("nono: platform rule %q: %w", rule, err)
+		}
+	}
+
 	// Apply — irreversible. This process and all children are now bound.
 	if err := nono.Apply(caps); err != nil {
 		return res, fmt.Errorf("nono: apply: %w", err)

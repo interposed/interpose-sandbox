@@ -43,24 +43,49 @@ pkg/procbox/                         OUR interface + policy schema
   escape_test.go    CI gate — re-exec pattern: a sandboxed child proves it can
                     work in cwd but can't read ~/.ssh or write $HOME.
 
-cmd/interpose-sandbox/
-  wrap.go / wrap_exec.go   `interpose-sandbox wrap [flags] -- cmd` — the FREE,
-                    unprivileged CLI. Self-restricts via procbox.Apply, then
-                    syscall.Exec so the sandboxed image replaces the wrapper
-                    (child inherits the irrevocable ruleset).
 ```
+
+pkg/procbox is a **library** — the surface lives in the main `interpose` CLI
+(interpose repo) as `interpose sandbox`, imported via a sibling-path replace.
+There is no standalone `wrap` command (dropped: a separate `interpose-sandbox
+wrap` verb was the wrong UX). The microVM ("Sealed") commands stay in this repo.
+
+## Surface: `interpose sandbox` (in the interpose repo)
+
+```
+interpose sandbox -- claude            # automatic — strongest level the plan allows
+interpose sandbox --instant -- claude  # force Instant (no hardware tap)
+interpose sandbox ls / attach <id>     # reconnect (lands with the operator surface)
+```
+
+- Levels are **customer-facing names** (Instant · Sealed · Ambient), never the
+  internal mechanism jargon. Automatic when no flag; `--instant/--sealed/--ambient`
+  forces one.
+- **Floor** (admin fleet minimum) and **ceiling** (plan entitlement maximum)
+  clamp the choice. An explicit level above the plan **falls back to Instant +
+  an upsell note** — never a hard refusal.
+- **Governance is free-riding**: the run POSTs the same `/v0/watch` the Linux
+  `interpose run` uses → session card + audit + entitlement 402 gate, with zero
+  new daemon code. No daemon / inactive license → free floor (still sandboxed,
+  shown "Unmanaged"). Sealed/Ambient today: `INTERPOSE_SANDBOX_FLOOR/CEILING`
+  env hooks; real license-tier + org-policy wiring is next.
+- **Do-not-break**: procbox is gated so the default `CGO_ENABLED=0` interpose
+  release build is unchanged (nono-go compiles only under cgo); verified.
 
 Backend selection: nono-go (100) wins when CGO + supported; go-landlock (50)
 covers CGO-disabled Linux and the sovereign hedge. macOS requires the nono
 backend (Xcode CLT provides the C toolchain).
 
-## Verified (this Mac, macOS · nono engine)
+## Verified (this Mac, macOS · nono engine, via `interpose sandbox`)
 
-- `wrap -- sh -c 'echo hi > f && cat f && ls'` → works (fs read/write in cwd).
-- `wrap -- cat ~/.ssh/id` → **denied** ("operation not permitted").
-- `wrap -- ls ~` → **denied** ($HOME invisible).
-- pipes + file redirection both work (`wrap -- echo x | cat`).
-- escape suite passes; `go vet` clean; nocgo Linux build compiles (fallback).
+- `interpose sandbox -- sh -c 'echo written > out && cat out'` → works (cwd RW).
+- `interpose sandbox -- sh -c 'cat ~/.ssh/*'` → **denied** ($HOME invisible).
+- `interpose sandbox -- sh -c 'ls ~'` → **"Operation not permitted"**.
+- status line prints: `🛡  Protected — Instant sandbox (nono)` + managed/unmanaged.
+- free user `--ambient` → falls back to Instant + upsell; Team ceiling → "coming";
+  admin `--floor sealed` → honest error.
+- interpose builds **both** `CGO_ENABLED=1` (real engine) and `CGO_ENABLED=0`
+  (release, unchanged); `go vet` clean. procbox escape suite still passes.
 
 ## "All that nono gives" — mapping to PT phases
 

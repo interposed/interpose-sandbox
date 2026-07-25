@@ -19,3 +19,9 @@ func systemBaseline() (ro []string, roFiles []string, rw []string) {
 	rw = []string{"/dev/null", "/dev/tty", "/dev/pts", "/dev/ptmx"}
 	return
 }
+
+// agentPlatformRules is empty on Linux: Landlock governs the filesystem (and,
+// on newer ABIs, TCP) — not syscalls like fork/exec or IPC. The operations a
+// runtime needs aren't restricted here, so no per-operation baseline is needed
+// (unlike macOS Seatbelt). Kept for a symmetric backend API.
+func agentPlatformRules() []string { return nil }
