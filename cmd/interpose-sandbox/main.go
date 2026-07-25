@@ -48,6 +48,8 @@ func main() {
 		runNew(args)
 	case "run":
 		runRun(args)
+	case "wrap":
+		os.Exit(runWrap(args))
 	case "ls", "list":
 		runLs(args)
 	case "rm", "remove":
