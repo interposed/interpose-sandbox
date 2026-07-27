@@ -65,6 +65,9 @@ type NetPolicy struct {
 	ConnectPorts []int    `json:"connect_ports,omitempty"`
 	BindPorts    []int    `json:"bind_ports,omitempty"`
 	Domains      []string `json:"domains,omitempty"`
+	// ProxyPort is the 127.0.0.1 port of the supervised CONNECT proxy that a
+	// NetDomains sandbox must transit; the kernel rule is bound to it.
+	ProxyPort int `json:"proxy_port,omitempty"`
 }
 
 // Approval is the opt-in hardware-root level.

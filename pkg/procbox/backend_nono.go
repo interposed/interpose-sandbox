@@ -74,12 +74,18 @@ func (b *nonoBackend) Apply(p PolicySpec) (Result, error) {
 			return res, fmt.Errorf("nono: set network blocked: %w", err)
 		}
 	case NetDomains:
-		// Domain filtering runs through nono's proxy (governed tier wires the
-		// proxy + port); here we set proxy-only so egress must transit it.
+		// Domain filtering: direct egress is blocked; the child must transit the
+		// supervised parent's CONNECT proxy on 127.0.0.1:ProxyPort, which enforces
+		// the allow-list. ProxyPort binds the kernel rule to that one port.
 		if err := caps.SetNetworkMode(nono.NetworkProxyOnly); err != nil {
 			return res, fmt.Errorf("nono: set network proxy-only: %w", err)
 		}
-		res.Notes = append(res.Notes, "net=domains: proxy-only set; the governed tier supplies the L7 proxy")
+		if p.Net.ProxyPort > 0 {
+			if err := caps.SetProxyPort(uint16(p.Net.ProxyPort)); err != nil {
+				return res, fmt.Errorf("nono: set proxy port: %w", err)
+			}
+		}
+		res.Notes = append(res.Notes, "net=domains: proxy-only via 127.0.0.1 supervised proxy")
 	case NetAll, "", NetTCP:
 		if err := caps.SetNetworkMode(nono.NetworkAllowAll); err != nil {
 			return res, fmt.Errorf("nono: set network: %w", err)
