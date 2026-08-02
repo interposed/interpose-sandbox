@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -63,15 +66,64 @@ func attachLocalShell() {
 		cmd = exec.Command(shell, "-i")
 		cmd.Env = append(os.Environ(), "PS1=sandbox$ ", "TERM=xterm-256color")
 	}
-	ptmx, err := pty.Start(cmd)
+	// Full-screen TUIs (the yeet observation dashboards, pi) place their cursor and
+	// selection highlight against the reported window size, so the PTY must be born
+	// with a real size, not creack/pty's default 0x0 — at 0x0 a program falls back
+	// to a fixed 80x24 and its interactive layout lands in the wrong place relative
+	// to the operator's actual terminal. Start with a sane default; the daemon then
+	// streams the operator's true cols/rows over the winch control fd below.
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		die("local pty: %v", err)
 	}
 	defer func() { _ = ptmx.Close() }()
+	// Window-resize channel: the daemon passes a control pipe as an extra fd (its
+	// number in INTERPOSE_SANDBOX_PTY_WINCH_FD) and writes one "rows cols\n" line
+	// per operator resize. Apply each as TIOCSWINSZ on the master, which also sends
+	// SIGWINCH to the child so the TUI re-lays-out. Absent (older daemon) → no-op.
+	if fd := os.Getenv("INTERPOSE_SANDBOX_PTY_WINCH_FD"); fd != "" {
+		if n, perr := strconv.Atoi(fd); perr == nil && n >= 0 {
+			go watchWinch(os.NewFile(uintptr(n), "winch"), ptmx)
+		}
+	}
 	if os.Getenv("INTERPOSE_SANDBOX_PTY_CMD") == "" {
 		fmt.Fprintln(ptmx, "echo '[local-pty dev-mode] live shell — this is NOT a real sandbox'")
 	}
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
 	_, _ = io.Copy(os.Stdout, ptmx)
 	_ = cmd.Wait()
+}
+
+// watchWinch reads newline-delimited "rows cols" resize messages from the daemon's
+// control pipe and applies each to the PTY master. It returns when the pipe closes.
+func watchWinch(ctl *os.File, ptmx *os.File) {
+	if ctl == nil {
+		return
+	}
+	defer func() { _ = ctl.Close() }()
+	sc := bufio.NewScanner(ctl)
+	for sc.Scan() {
+		if ws, ok := parseWinch(sc.Text()); ok {
+			_ = pty.Setsize(ptmx, ws)
+		}
+	}
+}
+
+// parseWinch parses a "rows cols" control line into a Winsize, rejecting anything
+// out of a sane range (0 or absurdly large) so a malformed frame can't drive the
+// PTY to a degenerate size. Pure and total: the sole decision, so it is unit-tested.
+func parseWinch(line string) (*pty.Winsize, bool) {
+	f := strings.Fields(line)
+	if len(f) != 2 {
+		return nil, false
+	}
+	rows, err1 := strconv.Atoi(f[0])
+	cols, err2 := strconv.Atoi(f[1])
+	if err1 != nil || err2 != nil {
+		return nil, false
+	}
+	if rows < 1 || cols < 1 || rows > 2000 || cols > 2000 {
+		return nil, false
+	}
+	return &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}, true
 }
