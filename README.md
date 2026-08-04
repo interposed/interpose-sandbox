@@ -1,5 +1,7 @@
 # interpose-sandbox
 
+[![govulncheck](https://github.com/interposed/interpose-sandbox/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/interposed/interpose-sandbox/actions/workflows/govulncheck.yml)
+
 A microVM-based agent sandbox that runs interpose's kernel enforcer **with the kernel itself under our control**. Built on [Firecracker](https://firecracker-microvm.github.io/). Open source, no proprietary runtime dependency.
 
 In one sentence: **the parts of Docker SBX we couldn't change, in a stack where we can.**
