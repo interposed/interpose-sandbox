@@ -34,6 +34,8 @@ jobs:
     steps:
       - name: Checkout interpose-sandbox
         uses: actions/checkout@v4
+        with:
+          path: interpose-sandbox
 
       - name: Checkout interpose (for the enforcer binary)
         uses: actions/checkout@v4
@@ -66,4 +68,5 @@ jobs:
           INTERPOSE_SRC: ${{ github.workspace }}/_interpose
           AGENT_TAG: startaworldpeace/interpose-agent:ubuntu-24.04-${{ matrix.arch }}-${{ steps.v.outputs.version }}
           PUBLISH: '1'
+        working-directory: interpose-sandbox
         run: ./image/build.sh
