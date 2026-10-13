@@ -1,4 +1,4 @@
-module github.com/interposehq/interpose-sandbox
+module github.com/interposed/interpose-sandbox
 
 go 1.25.0
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/interposehq/interpose-sandbox/internal/vsockproto"
+	"github.com/interposed/interpose-sandbox/internal/vsockproto"
 )
 
 // Conn is a live connection to the guest-agent. After a successful start/attach,

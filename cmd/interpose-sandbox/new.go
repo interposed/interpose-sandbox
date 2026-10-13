@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/interposehq/interpose-sandbox/internal/firecracker"
-	"github.com/interposehq/interpose-sandbox/internal/kernel"
-	"github.com/interposehq/interpose-sandbox/internal/registry"
-	"github.com/interposehq/interpose-sandbox/internal/rootfs"
+	"github.com/interposed/interpose-sandbox/internal/firecracker"
+	"github.com/interposed/interpose-sandbox/internal/kernel"
+	"github.com/interposed/interpose-sandbox/internal/registry"
+	"github.com/interposed/interpose-sandbox/internal/rootfs"
 )
 
 // runNew implements `interpose-sandbox new <agent> [workspace]`.

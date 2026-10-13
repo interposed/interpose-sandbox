@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/interposehq/interpose-sandbox/internal/registry"
+	"github.com/interposed/interpose-sandbox/internal/registry"
 )
 
 // sandboxStateRoot is the base dir holding per-sandbox state + registry.json.

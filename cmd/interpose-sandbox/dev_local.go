@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/interposehq/interpose-sandbox/internal/registry"
+	"github.com/interposed/interpose-sandbox/internal/registry"
 )
 
 // Local PTY dev-mode (env INTERPOSE_SANDBOX_LOCAL_PTY=1). A verification harness

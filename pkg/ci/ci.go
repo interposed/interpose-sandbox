@@ -1,0 +1,207 @@
+// Package ci is consumer #1 of the sandbox pool: it runs a pipeline of steps,
+// each inside its own governed cell, with release-class steps held for a human
+// approval (fail-closed). It is the "turn a machine into a CI runner" piece -
+// the runner is the pool, each job is a cell, and the release step is the
+// held, approved action. The RunRecord it emits is the signed-ish execution
+// record the operator's Releases page reads.
+package ci
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/interposed/interpose-sandbox/pkg/cell"
+	"github.com/interposed/interpose-sandbox/pkg/pool"
+	"github.com/interposed/interpose-sandbox/pkg/procbox"
+)
+
+const maxCapturedOutput = 8 << 10 // 8 KiB of stdout/stderr kept per step in the record
+
+// Step is one pipeline step.
+type Step struct {
+	Name    string   `json:"name"`
+	Run     []string `json:"run"`               // argv; Run[0] resolved via PATH inside the cell
+	Release bool     `json:"release,omitempty"` // release-class: held for approval before it runs
+}
+
+// Pipeline is an ordered list of steps run in one repo workdir.
+type Pipeline struct {
+	Name     string   `json:"name"`
+	Workdir  string   `json:"workdir"`            // repo checkout dir; the cell's RW root
+	Runtimes []string `json:"runtimes,omitempty"` // procbox runtime groups (node/python/go/rust)
+	Net      string   `json:"net,omitempty"`      // off (default) | all | tcp
+	Steps    []Step   `json:"steps"`
+}
+
+// Meta binds a run to its source so a release approval can't be replayed.
+type Meta struct {
+	RunID  string `json:"run_id"`
+	Commit string `json:"commit,omitempty"`
+	Digest string `json:"digest,omitempty"`
+}
+
+// Decision is an approval outcome.
+type Decision string
+
+const (
+	Approved Decision = "approved"
+	Denied   Decision = "denied"
+)
+
+// ReleaseRequest is what an Approver is asked to decide, bound to the run. The
+// json tags must match the operator's PendingReleaseDTO so a pending-release
+// file written here is read correctly on the Releases page.
+type ReleaseRequest struct {
+	Pipeline string `json:"pipeline"`
+	Step     string `json:"step"`
+	RunID    string `json:"run_id"`
+	Commit   string `json:"commit,omitempty"`
+	Digest   string `json:"digest,omitempty"`
+}
+
+// Approver decides whether a release-class step may run. In production this is
+// the operator approval ceremony over the factor model; here we ship two
+// trivial ones for dev/tests.
+type Approver interface {
+	Approve(ctx context.Context, req ReleaseRequest) (Decision, error)
+}
+
+// AutoApprove approves every release (dev only).
+type AutoApprove struct{}
+
+func (AutoApprove) Approve(context.Context, ReleaseRequest) (Decision, error) { return Approved, nil }
+
+// DenyAll denies every release (proves fail-closed).
+type DenyAll struct{}
+
+func (DenyAll) Approve(context.Context, ReleaseRequest) (Decision, error) { return Denied, nil }
+
+// StepResult records what happened to one step.
+type StepResult struct {
+	Name       string    `json:"name"`
+	Release    bool      `json:"release,omitempty"`
+	Held       bool      `json:"held,omitempty"`     // release step that went through approval
+	Decision   Decision  `json:"decision,omitempty"` // approval outcome for a release step
+	ExitCode   int       `json:"exit_code"`
+	Skipped    bool      `json:"skipped,omitempty"`
+	SkipReason string    `json:"skip_reason,omitempty"`
+	Output     string    `json:"output,omitempty"` // captured stdout+stderr (truncated)
+	Started    time.Time `json:"started"`
+	Finished   time.Time `json:"finished"`
+}
+
+// RunRecord is the execution record for one pipeline run. It is what the
+// operator Releases page lists and what a later signer would attest.
+type RunRecord struct {
+	RunID    string       `json:"run_id"`
+	Pipeline string       `json:"pipeline"`
+	Commit   string       `json:"commit,omitempty"`
+	Digest   string       `json:"digest,omitempty"`
+	OK       bool         `json:"ok"`
+	Started  time.Time    `json:"started"`
+	Finished time.Time    `json:"finished"`
+	Steps    []StepResult `json:"steps"`
+}
+
+// Run executes the pipeline. Steps run in order; the pipeline stops at the
+// first failing step or denied release (fail-closed). A nil error means the
+// run completed its bookkeeping - inspect RunRecord.OK for success.
+func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Meta) (RunRecord, error) {
+	if meta.RunID == "" {
+		meta.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
+	}
+	if appr == nil {
+		appr = DenyAll{} // safe default: no approver means no releases
+	}
+	rec := RunRecord{
+		RunID:    meta.RunID,
+		Pipeline: p.Name,
+		Commit:   meta.Commit,
+		Digest:   meta.Digest,
+		Started:  time.Now(),
+		OK:       true,
+	}
+
+	for _, step := range p.Steps {
+		sr := StepResult{Name: step.Name, Release: step.Release, Started: time.Now()}
+
+		if step.Release {
+			sr.Held = true
+			dec, err := appr.Approve(ctx, ReleaseRequest{
+				Pipeline: p.Name, Step: step.Name, RunID: meta.RunID, Commit: meta.Commit, Digest: meta.Digest,
+			})
+			if err != nil {
+				dec = Denied
+			}
+			sr.Decision = dec
+			if dec != Approved {
+				sr.Skipped = true
+				sr.SkipReason = "release denied (fail-closed)"
+				sr.Finished = time.Now()
+				rec.Steps = append(rec.Steps, sr)
+				rec.OK = false
+				break // fail closed: stop the pipeline
+			}
+		}
+
+		var buf bytes.Buffer
+		spec := cell.Spec{
+			ID:      meta.RunID + "-" + sanitize(step.Name),
+			Cmd:     step.Run,
+			Workdir: p.Workdir,
+			Policy:  cell.Policy([]string{p.Workdir}, nil, p.Runtimes, netMode(p.Net)),
+			Stdout:  &buf,
+			Stderr:  &buf,
+		}
+		res, err := pl.Run(ctx, spec)
+		sr.ExitCode = res.ExitCode
+		sr.Output = truncate(buf.String(), maxCapturedOutput)
+		sr.Finished = time.Now()
+		rec.Steps = append(rec.Steps, sr)
+
+		if err != nil || res.ExitCode != 0 {
+			rec.OK = false
+			break // fail the pipeline at the first failing step
+		}
+	}
+
+	rec.Finished = time.Now()
+	return rec, nil
+}
+
+func netMode(s string) procbox.NetMode {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "all":
+		return procbox.NetAll
+	case "tcp":
+		return procbox.NetTCP
+	default:
+		return procbox.NetOff
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "\n...[truncated]"
+}
+
+func sanitize(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "step"
+	}
+	return b.String()
+}
