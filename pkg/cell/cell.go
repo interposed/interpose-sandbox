@@ -87,6 +87,13 @@ func Run(ctx context.Context, s Spec) (Result, error) {
 	// os.Environ(). This is the env-leak boundary: a secret in interpose-ci's env does
 	// not reach a governed step.
 	jobEnv := cellBaseEnv(s.Workdir, s.Env)
+	// Create the per-cell scratch dir (TMPDIR) up front, while we are still
+	// outside the sandbox. It lives inside the workdir, so it is writable to the
+	// job and torn down with the ephemeral workspace. Best-effort: a tool that
+	// does not use TMPDIR is unaffected if this fails.
+	if s.Workdir != "" {
+		_ = os.MkdirAll(cellTmpDir(s.Workdir), 0o700)
+	}
 	specJSON, err := json.Marshal(shimSpec{Cmd: s.Cmd, Policy: s.Policy, Env: jobEnv})
 	if err != nil {
 		return res, fmt.Errorf("cell: marshal spec: %w", err)
@@ -145,7 +152,7 @@ func cellBaseEnv(workdir string, extra []string) []string {
 		}
 		return false
 	}
-	out := make([]string, 0, len(extra)+2)
+	out := make([]string, 0, len(extra)+3)
 	if !has("PATH") {
 		out = append(out, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}
@@ -156,7 +163,28 @@ func cellBaseEnv(workdir string, extra []string) []string {
 		}
 		out = append(out, "HOME="+home)
 	}
+	// Point TMPDIR at a scratch dir INSIDE the workdir - the one writable
+	// surface in a cell. System /tmp is deliberately NOT in the RW baseline, so
+	// a tool that scratches there (go build's work dir, many compilers, pip's
+	// build isolation) fails with "permission denied". It must be a SUBDIR, not
+	// the workdir itself: go refuses to build a module whose root is the system
+	// temp root ("ignoring go.mod in system temp root"), and TMPDIR==workdir
+	// would make the module root equal to TMPDIR. cell.Run creates this dir.
+	if !has("TMPDIR") {
+		out = append(out, "TMPDIR="+cellTmpDir(workdir))
+	}
 	return append(out, extra...)
+}
+
+// cellTmpDir is the per-cell scratch directory: a subdir of the workdir (the
+// cell's writable surface), kept distinct from the workdir root so build tools
+// that reject a module/project located AT the temp root still work. Falls back
+// to /tmp only when there is no workdir (not writable in a cell, but honest).
+func cellTmpDir(workdir string) string {
+	if strings.TrimSpace(workdir) == "" {
+		return "/tmp"
+	}
+	return filepath.Join(workdir, ".interpose-tmp")
 }
 
 // Shim is the cell child entry point: it resolves the command, applies the

@@ -9,8 +9,16 @@ import "github.com/interposed/interpose-sandbox/pkg/procbox"
 // Note: /proc is included for tooling that reads /proc/self, but in the
 // shared-kernel tier it is the host's procfs (no PID namespace yet) - one more
 // reason this tier is "standard", not hardware isolation.
+//
+// /run/systemd/resolve is here for DNS: on systemd-resolved hosts (Ubuntu,
+// Fedora, most distros) /etc/resolv.conf is a symlink to
+// /run/systemd/resolve/stub-resolv.conf, and Landlock/nono resolve the symlink
+// at open time - so allowing /etc alone leaves the resolver config unreadable
+// and every real dependency fetch (go get, pip, npm) dies with EAI_AGAIN. We
+// scope to the resolver dir, not all of /run, to avoid exposing its sockets and
+// secrets. Dropped on hosts without it.
 func SystemBaselineRO() []string {
-	return []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/opt", "/proc"}
+	return []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/opt", "/proc", "/run/systemd/resolve"}
 }
 
 // SystemBaselineRW is the device nodes a typical command expects to write.

@@ -160,3 +160,77 @@ func TestCellResourceCaps(t *testing.T) {
 	}
 	t.Logf("cgroup caps applied at %s", res.CgroupPath)
 }
+
+// TestSystemBaselineExposesResolverConfigForDNS pins the DNS fix: on
+// systemd-resolved hosts /etc/resolv.conf is a symlink into
+// /run/systemd/resolve, which the sandbox resolves at open time. If the
+// baseline does not cover that target, every real dependency fetch (go get,
+// pip, npm) fails with EAI_AGAIN inside a cell - which is exactly the gap the
+// first real-dependency CI runs hit. Allowing /etc alone is not enough.
+func TestSystemBaselineExposesResolverConfigForDNS(t *testing.T) {
+	const resolver = "/run/systemd/resolve"
+
+	found := false
+	for _, p := range SystemBaselineRO() {
+		if p == resolver {
+			found = true
+		}
+		if p == "/run" {
+			t.Fatalf("baseline exposes all of /run (%q) - scope to the resolver dir, not its sockets/secrets", p)
+		}
+	}
+	if !found {
+		t.Fatalf("SystemBaselineRO missing %q: resolv.conf symlink target is unreadable in cells, DNS dies with EAI_AGAIN", resolver)
+	}
+
+	// The resolver dir must also survive composition into the real cell policy.
+	pol := Policy(nil, nil, nil, procbox.NetAll)
+	got := false
+	for _, p := range pol.FS.RO {
+		if p == resolver {
+			got = true
+		}
+	}
+	if !got {
+		t.Fatalf("Policy did not carry %q into FS.RO: %v", resolver, pol.FS.RO)
+	}
+}
+
+// TestCellBaseEnvDefaultsTmpdirToWorkdir pins that a cell's TMPDIR points at the
+// workdir (the only writable surface) unless the caller set it. Without this,
+// go build (and other compilers) fail with "mkdir /tmp/...: permission denied"
+// because system /tmp is deliberately not in the RW baseline - the exact gap
+// the first real `go build` in a governed cell hit.
+func TestCellBaseEnvDefaultsTmpdirToWorkdir(t *testing.T) {
+	env := cellBaseEnv("/work/job", nil)
+	want := "TMPDIR=/work/job/.interpose-tmp"
+	found := false
+	for _, e := range env {
+		if e == want {
+			found = true
+		}
+		// TMPDIR must be a SUBDIR, never the workdir root: go refuses a module
+		// rooted at the system temp root, so TMPDIR==workdir breaks go build.
+		if e == "TMPDIR=/work/job" {
+			t.Fatalf("TMPDIR is the workdir root; go build will reject a module at the temp root")
+		}
+	}
+	if !found {
+		t.Fatalf("cellBaseEnv did not default TMPDIR to a workdir subdir; got %v", env)
+	}
+
+	// A caller-provided TMPDIR must win (no duplicate, no override).
+	env = cellBaseEnv("/work/job", []string{"TMPDIR=/work/job/.scratch"})
+	n := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "TMPDIR=") {
+			n++
+			if e != "TMPDIR=/work/job/.scratch" {
+				t.Fatalf("caller TMPDIR overridden: %q", e)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly one TMPDIR, got %d in %v", n, env)
+	}
+}
