@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -46,6 +47,10 @@ type Meta struct {
 	// and cells never inherit the process environment - so a mapped secret or a runner
 	// token in interpose-ci's env cannot leak into a governed step.
 	Env []string `json:"-"`
+	// Stream, when set, ALSO writes each step's output to it live (e.g. os.Stdout, so it
+	// appears in the forge's job log). Default nil = sovereign: step output is captured
+	// into the run record only, read in the operator, never streamed to the forge.
+	Stream io.Writer `json:"-"`
 }
 
 // CuratedEnv returns the ALLOW-LISTED, non-secret CI context to hand to cells, filtered
@@ -191,14 +196,19 @@ func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Met
 		}
 
 		var buf bytes.Buffer
+		var stepOut io.Writer = &buf
+		if meta.Stream != nil {
+			fmt.Fprintf(meta.Stream, "\n== %s ==\n", step.Name)
+			stepOut = io.MultiWriter(&buf, meta.Stream) // record AND live stream
+		}
 		spec := cell.Spec{
 			ID:      meta.RunID + "-" + sanitize(step.Name),
 			Cmd:     step.Run,
 			Workdir: p.Workdir,
 			Env:     meta.Env, // curated CI context only; the cell adds a PATH/HOME base
 			Policy:  cell.Policy([]string{p.Workdir}, nil, p.Runtimes, netMode(p.Net)),
-			Stdout:  &buf,
-			Stderr:  &buf,
+			Stdout:  stepOut,
+			Stderr:  stepOut,
 		}
 		res, err := pl.Run(ctx, spec)
 		sr.ExitCode = res.ExitCode

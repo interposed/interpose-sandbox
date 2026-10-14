@@ -42,7 +42,7 @@ func ciDir(sub string) string {
 
 func main() {
 	if len(os.Args) < 3 || os.Args[1] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: interpose-ci run <pipeline.json> [--approve auto|deny|file] [--workdir dir] [--records dir] [--max n] [--commit sha] [--digest d]")
+		fmt.Fprintln(os.Stderr, "usage: interpose-ci run <pipeline.json> [--approve auto|deny|file] [--workdir dir] [--stream] [--records dir] [--max n] [--commit sha] [--digest d]")
 		os.Exit(2)
 	}
 	path := os.Args[2]
@@ -56,7 +56,21 @@ func main() {
 	commit := fs.String("commit", "", "commit SHA to bind the run to")
 	digest := fs.String("digest", "", "artifact digest to bind the run to")
 	workdir := fs.String("workdir", "", "override the pipeline workdir (the cell's RW root); e.g. the forge checkout $GITHUB_WORKSPACE")
+	stream := fs.Bool("stream", false, "also echo each step's output to stdout (the forge job log); default off - sovereign: logs stay in the run record, read in the operator")
 	_ = fs.Parse(os.Args[3:])
+
+	// The machine policy OVERRIDES the workflow's requests (enforcement layer 1): a repo
+	// can't set --approve auto to skip the held release, or --stream to leak logs to the
+	// forge. The workflow flags are a request; the runner policy is the ceiling.
+	pol, perr := ci.LoadRunnerPolicy(ci.RunnerPolicyPath())
+	if perr != nil {
+		fmt.Fprintln(os.Stderr, "ci: runner policy:", perr)
+		os.Exit(1)
+	}
+	approveMode, streamOn, relTimeout, polNotes := pol.Effective(*approve, *stream, *timeout)
+	for _, n := range polNotes {
+		fmt.Fprintln(os.Stderr, n)
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -75,17 +89,21 @@ func main() {
 	}
 
 	var appr ci.Approver = ci.DenyAll{}
-	switch *approve {
+	switch approveMode {
 	case "auto":
 		appr = ci.AutoApprove{}
 	case "file":
-		appr = ci.FileApprover{PendingDir: *pending, DecisionDir: *decisions, Timeout: *timeout}
+		appr = ci.FileApprover{PendingDir: *pending, DecisionDir: *decisions, Timeout: relTimeout}
 	}
 
 	pl := pool.New(pool.Config{MaxConcurrent: *maxc})
 	// Cells get a curated, non-secret CI environment only - never interpose-ci's own
 	// process env (which may hold a mapped secret or a runner token).
-	rec, err := ci.Run(context.Background(), p, pl, appr, ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ())})
+	meta := ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ())}
+	if streamOn {
+		meta.Stream = os.Stdout // opt-in (unless the runner policy forced it): echo to the forge log
+	}
+	rec, err := ci.Run(context.Background(), p, pl, appr, meta)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ci: run:", err)
 		os.Exit(1)
