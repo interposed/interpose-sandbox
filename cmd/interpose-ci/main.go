@@ -31,9 +31,15 @@ import (
 	"github.com/interposed/interpose-sandbox/pkg/pool"
 )
 
-// ciDir is the canonical CI data root the operator's Releases page syncs from:
-// ~/.interpose/ci/{records,pending,decisions}. Both sides must agree.
+// ciDir is the canonical CI data root the daemon reads and the operator's Releases page
+// syncs from: <root>/{records,pending,decisions}. INTERPOSE_CI_DIR sets <root> so a
+// NON-ROOT runner and the root daemon can share one directory (e.g. /var/lib/interpose/ci)
+// - the key to running the GitHub runner unprivileged (enforcement layer 2). Both sides
+// must agree, so the daemon honours the same env.
 func ciDir(sub string) string {
+	if d := strings.TrimSpace(os.Getenv("INTERPOSE_CI_DIR")); d != "" {
+		return filepath.Join(d, sub)
+	}
 	if h, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(h, ".interpose", "ci", sub)
 	}
