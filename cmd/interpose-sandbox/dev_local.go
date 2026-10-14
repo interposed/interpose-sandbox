@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/interposehq/interpose-sandbox/internal/registry"
+	"github.com/interposed/interpose-sandbox/internal/registry"
 )
 
 // Local PTY dev-mode (env INTERPOSE_SANDBOX_LOCAL_PTY=1). A verification harness
@@ -70,9 +70,22 @@ func attachLocalShell() {
 	// selection highlight against the reported window size, so the PTY must be born
 	// with a real size, not creack/pty's default 0x0 — at 0x0 a program falls back
 	// to a fixed 80x24 and its interactive layout lands in the wrong place relative
-	// to the operator's actual terminal. Start with a sane default; the daemon then
-	// streams the operator's true cols/rows over the winch control fd below.
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	// to the operator's actual terminal. When the daemon already knows the
+	// operator's real size at open time (INTERPOSE_SANDBOX_PTY_COLS/ROWS — set for
+	// a yeet terminal, which fits its xterm before opening), start there instead of
+	// the 80x24 default, so a full-screen TUI's very first draw is already correct
+	// instead of relying on it redrawing cleanly once the first resize lands.
+	initSize := &pty.Winsize{Rows: 24, Cols: 80}
+	if rs := os.Getenv("INTERPOSE_SANDBOX_PTY_ROWS"); rs != "" {
+		if cs := os.Getenv("INTERPOSE_SANDBOX_PTY_COLS"); cs != "" {
+			if rows, rerr := strconv.Atoi(rs); rerr == nil && rows > 0 && rows <= 2000 {
+				if cols, cerr := strconv.Atoi(cs); cerr == nil && cols > 0 && cols <= 2000 {
+					initSize = &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}
+				}
+			}
+		}
+	}
+	ptmx, err := pty.StartWithSize(cmd, initSize)
 	if err != nil {
 		die("local pty: %v", err)
 	}

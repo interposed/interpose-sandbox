@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/interposehq/interpose-sandbox/internal/firecracker"
-	"github.com/interposehq/interpose-sandbox/internal/guestclient"
-	"github.com/interposehq/interpose-sandbox/internal/registry"
-	"github.com/interposehq/interpose-sandbox/internal/vsockproto"
+	"github.com/interposed/interpose-sandbox/internal/firecracker"
+	"github.com/interposed/interpose-sandbox/internal/guestclient"
+	"github.com/interposed/interpose-sandbox/internal/registry"
+	"github.com/interposed/interpose-sandbox/internal/vsockproto"
 )
 
 // runPause freezes a running sandbox via the Firecracker API.

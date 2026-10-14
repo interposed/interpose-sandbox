@@ -1,9 +1,8 @@
-module github.com/interposehq/interpose-sandbox
+module github.com/interposed/interpose-sandbox
 
 go 1.25.0
 
 require (
-	github.com/always-further/nono-go v0.21.0
 	github.com/creack/pty v1.1.24
 	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/mdlayher/vsock v1.3.0

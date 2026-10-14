@@ -28,7 +28,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/mdlayher/vsock"
 
-	"github.com/interposehq/interpose-sandbox/internal/vsockproto"
+	"github.com/interposed/interpose-sandbox/internal/vsockproto"
 )
 
 const scrollCap = 64 << 10 // per-session scrollback cap
