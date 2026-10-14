@@ -1,9 +1,0 @@
-# interpose-sandbox agent rootfs — busybox init (PID 1).
-# sysinit brings up the VM + starts the enforcer and the vsock guest-agent
-# (see /sbin/interpose-boot). A serial getty is a debug fallback; the operator
-# normally drives agents over vsock, not the console.
-::sysinit:/sbin/interpose-boot
-ttyAMA0::respawn:/bin/busybox getty -L -n -l /bin/sh 115200 ttyAMA0 vt100
-ttyS0::respawn:/bin/busybox getty -L -n -l /bin/sh 115200 ttyS0 vt100
-::ctrlaltdel:/bin/busybox reboot
-::shutdown:/bin/busybox umount -a -r
