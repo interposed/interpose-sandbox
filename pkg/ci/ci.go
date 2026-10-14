@@ -54,6 +54,11 @@ type Meta struct {
 	// RunURL is the forge's job/run URL (e.g. the GitHub Actions run), so the operator can
 	// link straight to it. Built by the caller from the CI env; empty when not in a forge.
 	RunURL string `json:"-"`
+	// CacheDir is a persistent, host-managed root where each runtime's package/build cache
+	// is kept, OUTSIDE the ephemeral workspace. Set by the caller (interpose-ci, from
+	// INTERPOSE_CI_DIR). Empty = caches stay under the workspace (the pre-fix behavior that
+	// corrupts the next checkout via Go's read-only module cache). See cacheRedirect.
+	CacheDir string `json:"-"`
 }
 
 // CuratedEnv returns the ALLOW-LISTED, non-secret CI context to hand to cells, filtered
@@ -178,6 +183,12 @@ func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Met
 		OK:       true,
 	}
 
+	// Redirect runtime caches out of the ephemeral workspace once per run; the
+	// resulting RW dirs and env apply uniformly to every step's cell.
+	cacheRW, cacheEnv := cacheRedirect(meta.CacheDir, p.Runtimes)
+	stepRW := append([]string{p.Workdir}, cacheRW...)
+	stepEnv := append(append([]string{}, meta.Env...), cacheEnv...)
+
 	for _, step := range p.Steps {
 		sr := StepResult{Name: step.Name, Release: step.Release, Started: time.Now()}
 
@@ -210,8 +221,8 @@ func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Met
 			ID:      meta.RunID + "-" + sanitize(step.Name),
 			Cmd:     step.Run,
 			Workdir: p.Workdir,
-			Env:     meta.Env, // curated CI context only; the cell adds a PATH/HOME base
-			Policy:  cell.Policy([]string{p.Workdir}, nil, p.Runtimes, netMode(p.Net)),
+			Env:     stepEnv, // curated CI context + cache redirect; the cell adds PATH/HOME/TMPDIR
+			Policy:  cell.Policy(stepRW, nil, p.Runtimes, netMode(p.Net)),
 			Stdout:  stepOut,
 			Stderr:  stepOut,
 		}

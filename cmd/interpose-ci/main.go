@@ -119,7 +119,7 @@ func main() {
 	pl := pool.New(pool.Config{MaxConcurrent: *maxc})
 	// Cells get a curated, non-secret CI environment only - never interpose-ci's own
 	// process env (which may hold a mapped secret or a runner token).
-	meta := ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ()), RunURL: forgeRunURL()}
+	meta := ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ()), RunURL: forgeRunURL(), CacheDir: ciDir("cache")}
 	if streamOn {
 		meta.Stream = os.Stdout // opt-in (unless the runner policy forced it): echo to the forge log
 	}
