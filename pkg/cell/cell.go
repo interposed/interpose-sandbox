@@ -60,7 +60,7 @@ type Spec struct {
 // Result reports what happened. ExitCode is the job's exit (-1 if it never ran).
 type Result struct {
 	ExitCode   int
-	Backend    string   // procbox backend that will apply ("landlock" | "nono")
+	Backend    string   // procbox backend that will apply (currently "landlock", our pure-Go engine)
 	CgroupPath string   // empty when no cgroup was created
 	Limited    bool     // at least one resource cap was applied
 	Notes      []string // best-effort downgrades (cgroup/sandbox)
