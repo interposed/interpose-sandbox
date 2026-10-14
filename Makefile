@@ -1,10 +1,8 @@
 .PHONY: build test tidy clean install help
 
-BIN := ./bin/interpose-sandbox
-
 help:
 	@echo "interpose-sandbox build targets:"
-	@echo "  make build      # build CLI to ./bin/interpose-sandbox"
+	@echo "  make build      # build interpose-ci + interpose-cell to ./bin/"
 	@echo "  make test       # unit tests"
 	@echo "  make tidy       # go mod tidy"
 	@echo "  make install    # go install to GOPATH/bin"
@@ -12,7 +10,8 @@ help:
 
 build:
 	mkdir -p ./bin
-	go build -o $(BIN) ./cmd/interpose-sandbox
+	go build -o ./bin/interpose-ci   ./cmd/interpose-ci
+	go build -o ./bin/interpose-cell ./cmd/interpose-cell
 
 test:
 	go test -count=1 -timeout=30s ./...
@@ -21,7 +20,7 @@ tidy:
 	go mod tidy
 
 install:
-	go install ./cmd/interpose-sandbox
+	go install ./cmd/interpose-ci ./cmd/interpose-cell
 
 clean:
 	rm -rf ./bin/
