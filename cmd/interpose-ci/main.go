@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/interposed/interpose-sandbox/pkg/ci"
@@ -41,7 +42,7 @@ func ciDir(sub string) string {
 
 func main() {
 	if len(os.Args) < 3 || os.Args[1] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: interpose-ci run <pipeline.json> [--approve auto|deny] [--records dir] [--max n] [--commit sha] [--digest d]")
+		fmt.Fprintln(os.Stderr, "usage: interpose-ci run <pipeline.json> [--approve auto|deny|file] [--workdir dir] [--records dir] [--max n] [--commit sha] [--digest d]")
 		os.Exit(2)
 	}
 	path := os.Args[2]
@@ -54,6 +55,7 @@ func main() {
 	maxc := fs.Int("max", 4, "max concurrent cells")
 	commit := fs.String("commit", "", "commit SHA to bind the run to")
 	digest := fs.String("digest", "", "artifact digest to bind the run to")
+	workdir := fs.String("workdir", "", "override the pipeline workdir (the cell's RW root); e.g. the forge checkout $GITHUB_WORKSPACE")
 	_ = fs.Parse(os.Args[3:])
 
 	raw, err := os.ReadFile(path)
@@ -65,6 +67,11 @@ func main() {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		fmt.Fprintln(os.Stderr, "ci: parse pipeline:", err)
 		os.Exit(1)
+	}
+	// A forge checkout dir is dynamic per run, so --workdir overrides the pipeline's
+	// static Workdir. This is the cell's read-write root; steps read/write the checkout.
+	if strings.TrimSpace(*workdir) != "" {
+		p.Workdir = *workdir
 	}
 
 	var appr ci.Approver = ci.DenyAll{}
