@@ -46,6 +46,20 @@ func ciDir(sub string) string {
 	return filepath.Join(".interpose-ci", sub)
 }
 
+// forgeRunURL builds the forge's run URL from the CI environment so the operator can link
+// out to it. GitHub for now: <server>/<owner/repo>/actions/runs/<run id>. Empty off-forge.
+func forgeRunURL() string {
+	repo, runID := os.Getenv("GITHUB_REPOSITORY"), os.Getenv("GITHUB_RUN_ID")
+	if repo == "" || runID == "" {
+		return ""
+	}
+	server := os.Getenv("GITHUB_SERVER_URL")
+	if server == "" {
+		server = "https://github.com"
+	}
+	return strings.TrimRight(server, "/") + "/" + repo + "/actions/runs/" + runID
+}
+
 func main() {
 	if len(os.Args) < 3 || os.Args[1] != "run" {
 		fmt.Fprintln(os.Stderr, "usage: interpose-ci run <pipeline.json> [--approve auto|deny|file] [--workdir dir] [--stream] [--records dir] [--max n] [--commit sha] [--digest d]")
@@ -105,7 +119,7 @@ func main() {
 	pl := pool.New(pool.Config{MaxConcurrent: *maxc})
 	// Cells get a curated, non-secret CI environment only - never interpose-ci's own
 	// process env (which may hold a mapped secret or a runner token).
-	meta := ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ())}
+	meta := ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ()), RunURL: forgeRunURL()}
 	if streamOn {
 		meta.Stream = os.Stdout // opt-in (unless the runner policy forced it): echo to the forge log
 	}

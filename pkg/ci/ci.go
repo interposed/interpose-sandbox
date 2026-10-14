@@ -51,6 +51,9 @@ type Meta struct {
 	// appears in the forge's job log). Default nil = sovereign: step output is captured
 	// into the run record only, read in the operator, never streamed to the forge.
 	Stream io.Writer `json:"-"`
+	// RunURL is the forge's job/run URL (e.g. the GitHub Actions run), so the operator can
+	// link straight to it. Built by the caller from the CI env; empty when not in a forge.
+	RunURL string `json:"-"`
 }
 
 // CuratedEnv returns the ALLOW-LISTED, non-secret CI context to hand to cells, filtered
@@ -148,6 +151,7 @@ type RunRecord struct {
 	Pipeline string       `json:"pipeline"`
 	Commit   string       `json:"commit,omitempty"`
 	Digest   string       `json:"digest,omitempty"`
+	RunURL   string       `json:"run_url,omitempty"` // forge job/run URL (link out from the operator)
 	OK       bool         `json:"ok"`
 	Started  time.Time    `json:"started"`
 	Finished time.Time    `json:"finished"`
@@ -169,6 +173,7 @@ func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Met
 		Pipeline: p.Name,
 		Commit:   meta.Commit,
 		Digest:   meta.Digest,
+		RunURL:   meta.RunURL,
 		Started:  time.Now(),
 		OK:       true,
 	}
