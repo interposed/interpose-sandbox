@@ -128,3 +128,41 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 }
+
+// TestCuratedEnvDropsSecretsKeepsContext pins the env boundary policy: non-secret CI
+// context crosses into a governed step; secrets, tokens and arbitrary vars do not.
+func TestCuratedEnvDropsSecretsKeepsContext(t *testing.T) {
+	parent := []string{
+		"GITHUB_SHA=abc123",
+		"CI=true",
+		"RUNNER_NAME=ci-runner-ubuntu-4gb",
+		"GITHUB_TOKEN=ghs_supersecret",
+		"ACTIONS_RUNTIME_TOKEN=sensitive",
+		"FAKE_SECRET=leakme",
+		"MY_API_KEY=nope",
+		"AWS_SECRET_ACCESS_KEY=nope",
+		"PATH=/usr/bin",
+	}
+	got := CuratedEnv(parent)
+	has := func(s string) bool {
+		for _, e := range got {
+			if e == s {
+				return true
+			}
+		}
+		return false
+	}
+	for _, keep := range []string{"GITHUB_SHA=abc123", "CI=true", "RUNNER_NAME=ci-runner-ubuntu-4gb"} {
+		if !has(keep) {
+			t.Errorf("CuratedEnv dropped safe CI context %q", keep)
+		}
+	}
+	for _, drop := range []string{
+		"GITHUB_TOKEN=ghs_supersecret", "ACTIONS_RUNTIME_TOKEN=sensitive",
+		"FAKE_SECRET=leakme", "MY_API_KEY=nope", "AWS_SECRET_ACCESS_KEY=nope", "PATH=/usr/bin",
+	} {
+		if has(drop) {
+			t.Errorf("CuratedEnv LEAKED %q (must be deny-by-default)", drop)
+		}
+	}
+}

@@ -41,6 +41,49 @@ type Meta struct {
 	RunID  string `json:"run_id"`
 	Commit string `json:"commit,omitempty"`
 	Digest string `json:"digest,omitempty"`
+	// Env is the curated environment every step's cell receives (non-secret CI context
+	// only). Set by the caller via CuratedEnv; it does NOT come from the pipeline JSON,
+	// and cells never inherit the process environment - so a mapped secret or a runner
+	// token in interpose-ci's env cannot leak into a governed step.
+	Env []string `json:"-"`
+}
+
+// CuratedEnv returns the ALLOW-LISTED, non-secret CI context to hand to cells, filtered
+// from the process environment. This is the ONLY CI context that crosses into a governed
+// step. Anything not on the allow-list - mapped secrets, GITHUB_TOKEN, ACTIONS_* runtime
+// tokens, registration tokens, arbitrary vars - is dropped. Deny-by-default for env, the
+// same stance the cell takes for filesystem and network.
+func CuratedEnv(parent []string) []string {
+	allow := map[string]bool{
+		"CI":                true,
+		"GITHUB_SHA":        true,
+		"GITHUB_REF":        true,
+		"GITHUB_REF_NAME":   true,
+		"GITHUB_REF_TYPE":   true,
+		"GITHUB_REPOSITORY": true,
+		"GITHUB_REPOSITORY_OWNER": true,
+		"GITHUB_RUN_ID":           true,
+		"GITHUB_RUN_NUMBER":       true,
+		"GITHUB_RUN_ATTEMPT":      true,
+		"GITHUB_WORKFLOW":         true,
+		"GITHUB_JOB":              true,
+		"GITHUB_ACTION":           true,
+		"GITHUB_ACTOR":            true,
+		"GITHUB_EVENT_NAME":       true,
+		"GITHUB_SERVER_URL":       true,
+		"GITHUB_API_URL":          true,
+		"GITHUB_GRAPHQL_URL":      true,
+		"RUNNER_OS":               true,
+		"RUNNER_ARCH":             true,
+		"RUNNER_NAME":             true,
+	}
+	var out []string
+	for _, e := range parent {
+		if k, _, ok := strings.Cut(e, "="); ok && allow[k] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // Decision is an approval outcome.
@@ -152,6 +195,7 @@ func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Met
 			ID:      meta.RunID + "-" + sanitize(step.Name),
 			Cmd:     step.Run,
 			Workdir: p.Workdir,
+			Env:     meta.Env, // curated CI context only; the cell adds a PATH/HOME base
 			Policy:  cell.Policy([]string{p.Workdir}, nil, p.Runtimes, netMode(p.Net)),
 			Stdout:  &buf,
 			Stderr:  &buf,

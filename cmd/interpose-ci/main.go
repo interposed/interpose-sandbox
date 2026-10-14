@@ -83,7 +83,9 @@ func main() {
 	}
 
 	pl := pool.New(pool.Config{MaxConcurrent: *maxc})
-	rec, err := ci.Run(context.Background(), p, pl, appr, ci.Meta{Commit: *commit, Digest: *digest})
+	// Cells get a curated, non-secret CI environment only - never interpose-ci's own
+	// process env (which may hold a mapped secret or a runner token).
+	rec, err := ci.Run(context.Background(), p, pl, appr, ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ())})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ci: run:", err)
 		os.Exit(1)

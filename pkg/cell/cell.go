@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/interposed/interpose-sandbox/pkg/procbox"
 )
@@ -41,7 +42,11 @@ type Spec struct {
 	ID      string             // stable id (cgroup leaf + audit); generated if empty
 	Cmd     []string           // argv; Cmd[0] resolved via PATH before the sandbox closes
 	Workdir string             // cell cwd; must be inside Policy.FS.RW
-	Env     []string           // extra env appended to the job's environment
+	// Env is the EXACT environment the job receives (plus a minimal PATH/HOME base the
+	// cell adds if absent). The parent process environment is deliberately NOT inherited
+	// - a secret in the caller's env (a mapped CI secret, a runner token) must never leak
+	// into a governed step. The caller curates what to pass (see ci.CuratedEnv).
+	Env []string
 	Policy  procbox.PolicySpec // the deny-default allow-list applied inside the cell
 	Limits  Limits             // resource caps (best-effort)
 	Stdin   io.Reader
@@ -78,7 +83,11 @@ func Run(ctx context.Context, s Spec) (Result, error) {
 		res.Backend = b.Name()
 	}
 
-	specJSON, err := json.Marshal(shimSpec{Cmd: s.Cmd, Policy: s.Policy})
+	// The job's environment is ONLY the curated base + Spec.Env - never the parent's
+	// os.Environ(). This is the env-leak boundary: a secret in interpose-ci's env does
+	// not reach a governed step.
+	jobEnv := cellBaseEnv(s.Workdir, s.Env)
+	specJSON, err := json.Marshal(shimSpec{Cmd: s.Cmd, Policy: s.Policy, Env: jobEnv})
 	if err != nil {
 		return res, fmt.Errorf("cell: marshal spec: %w", err)
 	}
@@ -90,8 +99,9 @@ func Run(ctx context.Context, s Spec) (Result, error) {
 	}
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
-	cmd.Env = append(append([]string{}, os.Environ()...), s.Env...)
-	cmd.Env = append(cmd.Env, shimEnv+"="+string(specJSON))
+	// The shim process gets the same curated env (it needs PATH to resolve the command)
+	// plus the spec marker - NOT the parent environment.
+	cmd.Env = append(append([]string{}, jobEnv...), shimEnv+"="+string(specJSON))
 
 	cg, limited, notes := prepCgroup(cmd, s.ID, s.Limits)
 	res.Limited = limited
@@ -118,6 +128,35 @@ func Run(ctx context.Context, s Spec) (Result, error) {
 type shimSpec struct {
 	Cmd    []string           `json:"cmd"`
 	Policy procbox.PolicySpec `json:"policy"`
+	Env    []string           `json:"env"` // the EXACT job environment (already curated)
+}
+
+// cellBaseEnv returns the ONLY environment a cell's job receives: the caller's explicit
+// Env plus a minimal, predictable base (PATH, HOME) when those are not already provided.
+// The parent process environment is NOT inherited - that is the point. A secret in the
+// caller's own environment can therefore never leak into a governed step; the caller
+// decides exactly what CI context to pass in via Spec.Env (see ci.CuratedEnv).
+func cellBaseEnv(workdir string, extra []string) []string {
+	has := func(k string) bool {
+		for _, e := range extra {
+			if strings.HasPrefix(e, k+"=") {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]string, 0, len(extra)+2)
+	if !has("PATH") {
+		out = append(out, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+	if !has("HOME") {
+		home := workdir
+		if strings.TrimSpace(home) == "" {
+			home = "/tmp"
+		}
+		out = append(out, "HOME="+home)
+	}
+	return append(out, extra...)
 }
 
 // Shim is the cell child entry point: it resolves the command, applies the
@@ -150,8 +189,10 @@ func Shim() {
 		fmt.Fprintln(os.Stderr, "cell: sandbox apply:", err)
 		os.Exit(126)
 	}
-	env := dropEnv(os.Environ(), shimEnv)
-	if err := execInto(bin, sp.Cmd, env); err != nil {
+	// The job's environment is EXACTLY what the spec carries (the curated base + the
+	// caller's Env) - the shim's own inherited os.Environ() is never passed on, so
+	// nothing from the parent leaks across the exec.
+	if err := execInto(bin, sp.Cmd, sp.Env); err != nil {
 		fmt.Fprintln(os.Stderr, "cell: exec:", err)
 		os.Exit(126)
 	}
@@ -187,17 +228,4 @@ func exitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return -1
-}
-
-// dropEnv returns env without the KEY=... entry.
-func dropEnv(env []string, key string) []string {
-	out := make([]string, 0, len(env))
-	pfx := key + "="
-	for _, e := range env {
-		if len(e) >= len(pfx) && e[:len(pfx)] == pfx {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
 }

@@ -64,6 +64,36 @@ func TestCellRunsAllowedCommand(t *testing.T) {
 	}
 }
 
+// A cell MUST NOT inherit the parent process environment. A secret in the caller's
+// env (a mapped CI secret, a runner/registration token) must never reach a governed
+// step - only the curated Spec.Env (plus the PATH/HOME base) crosses the boundary.
+func TestCellDoesNotLeakParentEnv(t *testing.T) {
+	backendOrSkip(t)
+	t.Setenv("LEAK_ME_SECRET", "topsecret")
+	work := t.TempDir()
+	var out bytes.Buffer
+	res, err := Run(context.Background(), Spec{
+		ID:      "test-env-leak",
+		Cmd:     []string{"/bin/sh", "-c", "echo L=[$LEAK_ME_SECRET] A=[$ALLOWED_VAR]"},
+		Workdir: work,
+		Env:     []string{"ALLOWED_VAR=yes"},
+		Policy:  Policy([]string{work}, nil, nil, procbox.NetOff),
+		Stdout:  &out,
+		Stderr:  &out,
+		Shim:    os.Args[0],
+	})
+	if err != nil {
+		t.Fatalf("run: %v (out=%q)", err, out.String())
+	}
+	got := strings.TrimSpace(out.String())
+	if strings.Contains(got, "topsecret") {
+		t.Fatalf("parent env LEAKED into the cell: %q", got)
+	}
+	if want := "L=[] A=[yes]"; got != want {
+		t.Fatalf("env: want %q, got %q (exit=%d)", want, got, res.ExitCode)
+	}
+}
+
 // A cell MUST NOT read a secret outside its allow-list (~/.ssh).
 func TestCellDeniesOutsideRead(t *testing.T) {
 	backendOrSkip(t)
