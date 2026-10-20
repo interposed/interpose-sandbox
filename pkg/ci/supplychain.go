@@ -40,6 +40,7 @@ type SupplyChain struct {
 	Ecosystem     string           `json:"ecosystem"`                // "go" (v1)
 	Observed      []ObservedModule `json:"observed"`                 // module@version this run pulled
 	Declared      int              `json:"declared"`                 // modules pinned in the lockfile
+	Libraries     []string         `json:"libraries,omitempty"`      // every declared module (path@version), so the full dependency set shows even on a warm cache
 	Undeclared    []ObservedModule `json:"undeclared,omitempty"`     // pulled but absent from the lockfile
 	Scan          *ScanResult      `json:"scan,omitempty"`           // dependency vuln scan (osv-scanner)
 	PinViolations []PinViolation   `json:"pin_violations,omitempty"` // pinned path fetched at an unapproved digest
@@ -295,11 +296,17 @@ func supplyChainRecord(before, after map[string]ObservedModule, declared map[str
 	}
 	sort.Slice(observed, func(i, j int) bool { return observed[i].key() < observed[j].key() })
 	sort.Slice(undeclared, func(i, j int) bool { return undeclared[i].key() < undeclared[j].key() })
+	libs := make([]string, 0, len(declared))
+	for k := range declared {
+		libs = append(libs, k)
+	}
+	sort.Strings(libs)
 	sc := &SupplyChain{
 		Mode:       "observe",
 		Ecosystem:  "go",
 		Observed:   observed,
 		Declared:   declaredN,
+		Libraries:  libs,
 		Undeclared: undeclared,
 	}
 	if !hasLock {
