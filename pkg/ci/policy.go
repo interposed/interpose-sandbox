@@ -26,11 +26,17 @@ type RunnerPolicy struct {
 	Stream *bool `json:"stream,omitempty"`
 	// MaxTimeout caps the release-approval wait (--timeout), e.g. "30m". Empty = no cap.
 	MaxTimeout string `json:"max_timeout,omitempty"`
-	// SupplyChain, set to "observe", makes interpose-ci attach a dependency supply-chain
-	// record to the run: the module@version set this run pulled into the cache, cross-checked
-	// against the lockfile (go.sum). Observe only - it records, it never fails a step. Empty =
-	// off. Gated on the depsec add-on: the daemon writes this only when the org is entitled.
-	SupplyChain string `json:"supply_chain,omitempty"` // "" | "observe"
+	// SupplyChain makes interpose-ci attach a dependency supply-chain record to the run (the
+	// module@version set it pulled, cross-checked against the lockfile, plus an osv-scanner pass).
+	// "observe" records only; "enforce" additionally fails the run BEFORE the build when a pinned
+	// module is fetched at an unapproved digest (see Pins). Empty = off. Gated on the depsec
+	// add-on: the daemon writes this only when the org is entitled.
+	SupplyChain string `json:"supply_chain,omitempty"` // "" | "observe" | "enforce"
+	// Pins maps a module/package path to its approved content digest (go h1: / npm sri). With
+	// SupplyChain "enforce", a dependency this run fetches whose path is pinned but whose digest
+	// differs fails the run before the build; with "observe" the mismatch is only recorded. Empty =
+	// no pins. The daemon writes these from the org's signed pin set (promoted from observe).
+	Pins map[string]string `json:"pins,omitempty"`
 }
 
 // DefaultRunnerPolicyPath is where the operator writes the machine policy. Root-owned on a

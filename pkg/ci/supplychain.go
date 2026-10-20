@@ -36,13 +36,25 @@ func (m ObservedModule) key() string { return m.Path + "@" + m.Version }
 
 // SupplyChain is the observe-mode dependency record attached to a RunRecord.
 type SupplyChain struct {
-	Mode       string           `json:"mode"`                 // "observe"
-	Ecosystem  string           `json:"ecosystem"`            // "go" (v1)
-	Observed   []ObservedModule `json:"observed"`             // module@version this run pulled
-	Declared   int              `json:"declared"`             // modules pinned in the lockfile
-	Undeclared []ObservedModule `json:"undeclared,omitempty"` // pulled but absent from the lockfile
-	Scan       *ScanResult      `json:"scan,omitempty"`       // dependency vuln scan (osv-scanner)
-	Note       string           `json:"note,omitempty"`
+	Mode          string           `json:"mode"`                     // "observe"
+	Ecosystem     string           `json:"ecosystem"`                // "go" (v1)
+	Observed      []ObservedModule `json:"observed"`                 // module@version this run pulled
+	Declared      int              `json:"declared"`                 // modules pinned in the lockfile
+	Undeclared    []ObservedModule `json:"undeclared,omitempty"`     // pulled but absent from the lockfile
+	Scan          *ScanResult      `json:"scan,omitempty"`           // dependency vuln scan (osv-scanner)
+	PinViolations []PinViolation   `json:"pin_violations,omitempty"` // pinned path fetched at an unapproved digest
+	Note          string           `json:"note,omitempty"`
+}
+
+// PinViolation is a module whose path is pinned to a specific approved digest but which this run
+// fetched at a different one - an unapproved version/digest for a pinned dependency. In enforce
+// mode this fails the run before the build; in observe mode it is only recorded.
+type PinViolation struct {
+	Package   string `json:"package"`
+	Version   string `json:"version,omitempty"`
+	Ecosystem string `json:"ecosystem,omitempty"`
+	Got       string `json:"got"`  // the digest actually fetched
+	Want      string `json:"want"` // the approved (pinned) digest
 }
 
 // VulnFinding is one vulnerable package reported by a dependency scan.
@@ -68,7 +80,7 @@ type ScanResult struct {
 // cross-checked against the lockfiles (go.sum, package-lock.json). Best-effort and non-fatal -
 // any trouble yields a record carrying a Note rather than failing the run. before is the pre-run
 // snapshot from SnapshotModules(cacheDir, runtimes); pass nil if none was taken.
-func ObserveSupplyChain(before map[string]ObservedModule, cacheDir, workdir string, runtimes []string) *SupplyChain {
+func ObserveSupplyChain(before map[string]ObservedModule, cacheDir, workdir string, runtimes []string, pins map[string]string, mode string) *SupplyChain {
 	after := SnapshotModules(cacheDir, runtimes)
 	declared := map[string]bool{}
 	declaredN := 0
@@ -92,7 +104,46 @@ func ObserveSupplyChain(before map[string]ObservedModule, cacheDir, workdir stri
 	sc := supplyChainRecord(before, after, declared, declaredN)
 	sc.Ecosystem = strings.Join(ecos, "+") // "", "go", "npm", or "go+npm"
 	sc.Scan = runDepScan(workdir)
+	if mode != "" {
+		sc.Mode = mode // "observe" | "enforce"
+		sc.PinViolations = VerifyPins(before, after, pins)
+	}
 	return sc
+}
+
+// VerifyPins reports the modules THIS run fetched (after minus before) whose path is pinned to a
+// specific approved digest but whose fetched digest differs - an unapproved version/digest for a
+// pinned dependency. Pure: the caller decides what to do (block in enforce, record in observe). A
+// module whose path is not pinned passes (pins are an allow-by-digest set, adopted gradually).
+func VerifyPins(before, after map[string]ObservedModule, pins map[string]string) []PinViolation {
+	if len(pins) == 0 {
+		return nil
+	}
+	var out []PinViolation
+	for k, m := range after {
+		if _, seen := before[k]; seen {
+			continue // already cached before this run
+		}
+		if want, ok := pins[m.Path]; ok && want != m.Hash {
+			out = append(out, PinViolation{Package: m.Path, Version: m.Version, Ecosystem: m.Ecosystem, Got: m.Hash, Want: want})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Package < out[j].Package })
+	return out
+}
+
+// FetchSteps returns the per-ecosystem dependency-fetch steps for the enforce pre-check: they
+// populate the caches from the lockfiles so the pin verify sees exactly what the build will use,
+// BEFORE the build runs. Bare tool names resolve on the cell's base PATH.
+func FetchSteps(runtimes []string) []Step {
+	var steps []Step
+	if hasRuntime(runtimes, "go") {
+		steps = append(steps, Step{Name: "supply-chain:fetch:go", Run: []string{"sh", "-c", "go mod download all"}})
+	}
+	if hasRuntime(runtimes, "node") {
+		steps = append(steps, Step{Name: "supply-chain:fetch:npm", Run: []string{"sh", "-c", "npm ci --no-audit --no-fund --loglevel=error || npm install --no-audit --no-fund --loglevel=error"}})
+	}
+	return steps
 }
 
 // hasRuntime reports whether a runtime group (e.g. "go", "node") is in the pipeline's list.

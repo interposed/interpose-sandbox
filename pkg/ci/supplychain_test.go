@@ -93,6 +93,43 @@ func TestSnapshotGoModulesMissingCacheIsEmptyNotError(t *testing.T) {
 	}
 }
 
+// VerifyPins flags a module THIS run fetched whose path is pinned to a different digest, skips
+// pinned-and-matching and unpinned modules, and ignores modules cached before the run.
+func TestVerifyPins(t *testing.T) {
+	after := map[string]ObservedModule{
+		"rsc.io/quote@v1.5.2": {Path: "rsc.io/quote", Version: "v1.5.2", Hash: "h1:good=", Ecosystem: "go"},
+		"evil@1.0.0":          {Path: "evil", Version: "1.0.0", Hash: "h1:bad=", Ecosystem: "npm"},
+		"unpinned@2.0.0":      {Path: "unpinned", Version: "2.0.0", Hash: "h1:xyz=", Ecosystem: "go"},
+	}
+	pins := map[string]string{
+		"rsc.io/quote": "h1:good=",     // matches → OK
+		"evil":         "h1:approved=", // mismatch → violation
+		// "unpinned" absent → passes (gradual adoption)
+	}
+	v := VerifyPins(nil, after, pins)
+	if len(v) != 1 || v[0].Package != "evil" || v[0].Got != "h1:bad=" || v[0].Want != "h1:approved=" {
+		t.Fatalf("want exactly one violation (evil), got %+v", v)
+	}
+}
+
+func TestVerifyPinsNoPins(t *testing.T) {
+	after := map[string]ObservedModule{"a@1": {Path: "a", Version: "1", Hash: "h"}}
+	if v := VerifyPins(nil, after, nil); v != nil {
+		t.Fatalf("no pins → no violations, got %+v", v)
+	}
+}
+
+// A pinned module already in the cache before this run is not re-checked (the run did not fetch
+// it); only what the run pulled is verified.
+func TestVerifyPinsSkipsPreCached(t *testing.T) {
+	before := map[string]ObservedModule{"evil@1.0.0": {Path: "evil", Version: "1.0.0", Hash: "h1:bad="}}
+	after := before
+	pins := map[string]string{"evil": "h1:approved="}
+	if v := VerifyPins(before, after, pins); len(v) != 0 {
+		t.Fatalf("pre-cached module should be skipped, got %+v", v)
+	}
+}
+
 // parseOSVReport pulls vulnerable packages out of osv-scanner's JSON: it skips clean packages,
 // collects the ids, and takes severity from database_specific first, then the group max.
 func TestParseOSVReport(t *testing.T) {
