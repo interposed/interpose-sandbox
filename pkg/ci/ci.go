@@ -62,6 +62,11 @@ type Meta struct {
 	// INTERPOSE_CI_DIR). Empty = caches stay under the workspace (the pre-fix behavior that
 	// corrupts the next checkout via Go's read-only module cache). See cacheRedirect.
 	CacheDir string `json:"-"`
+	// SupplyChain, when set by the caller (interpose-ci computes it BEFORE the pipeline runs,
+	// from the fetched dependency set), rides along with every release request so an approver
+	// sees the run's dependency risk (vulns, undeclared, pin violations) before deciding -
+	// no blind approvals. It is also stored on the run record.
+	SupplyChain *SupplyChain `json:"-"`
 }
 
 // CuratedEnv returns the ALLOW-LISTED, non-secret CI context to hand to cells, filtered
@@ -119,6 +124,10 @@ type ReleaseRequest struct {
 	RunID    string `json:"run_id"`
 	Commit   string `json:"commit,omitempty"`
 	Digest   string `json:"digest,omitempty"`
+	// SupplyChain is the run's dependency record (vulns, undeclared, pin violations, mode)
+	// as of this hold, so the approver can see the risk before deciding. Nil when the
+	// depsec add-on is off. Mirrored by the operator's PendingReleaseDTO.
+	SupplyChain *SupplyChain `json:"supply_chain,omitempty"`
 }
 
 // Approver decides whether a release-class step may run. In production this is
@@ -205,6 +214,7 @@ func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Met
 			sr.Held = true
 			dec, err := appr.Approve(ctx, ReleaseRequest{
 				Pipeline: p.Name, Step: step.Name, RunID: meta.RunID, Commit: meta.Commit, Digest: meta.Digest,
+				SupplyChain: meta.SupplyChain,
 			})
 			if err != nil {
 				dec = Denied

@@ -137,14 +137,18 @@ func main() {
 	// Resolve the pin set for THIS run's repository (its own pins + the org-wide "*" blessed layer).
 	scPins := ci.ResolvePins(pol.Pins, meta.Repo)
 
-	// Enforce pre-check (verify-then-build): fetch the deps into the cache, then verify the fetched
-	// digests against the signed pins BEFORE the build runs. On a violation the build never runs.
-	if scMode == "enforce" && len(scPins) > 0 {
+	// Supply-chain: fetch the dependency set up-front (when the add-on is on) so the pin
+	// pre-check, the observe record, AND any release approver all see the full set BEFORE
+	// the build - and before a release step holds for approval (so no one approves blind).
+	if scOn {
 		if fs := ci.FetchSteps(p.Runtimes); len(fs) > 0 {
 			fetchPipe := ci.Pipeline{Name: p.Name, Workdir: p.Workdir, Runtimes: p.Runtimes, Net: p.Net, Steps: fs}
 			if _, ferr := ci.Run(context.Background(), fetchPipe, pl, ci.AutoApprove{}, meta); ferr != nil {
 				fmt.Fprintln(os.Stderr, "ci: supply-chain fetch:", ferr)
 			}
+		}
+		// Enforce pin pre-check (verify-then-build): on a violation the build never runs.
+		if scMode == "enforce" && len(scPins) > 0 {
 			afterFetch := ci.SnapshotModules(meta.CacheDir, p.Runtimes)
 			if viol := ci.VerifyPins(scBefore, afterFetch, scPins); len(viol) > 0 {
 				now := time.Now()
@@ -164,6 +168,9 @@ func main() {
 				os.Exit(1)
 			}
 		}
+		// Compute the record now (deps are fetched) so it rides along with the release
+		// request (meta.SupplyChain) and is stored on the finished run record.
+		meta.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, scPins, scMode)
 	}
 
 	rec, err := ci.Run(context.Background(), p, pl, appr, meta)
@@ -171,8 +178,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ci: run:", err)
 		os.Exit(1)
 	}
-	if scOn {
-		rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, scPins, scMode)
+	if meta.SupplyChain != nil {
+		rec.SupplyChain = meta.SupplyChain
 	}
 
 	if rpath, err := rec.WriteJSON(*records); err == nil {
