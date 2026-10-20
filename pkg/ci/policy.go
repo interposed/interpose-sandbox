@@ -26,6 +26,11 @@ type RunnerPolicy struct {
 	Stream *bool `json:"stream,omitempty"`
 	// MaxTimeout caps the release-approval wait (--timeout), e.g. "30m". Empty = no cap.
 	MaxTimeout string `json:"max_timeout,omitempty"`
+	// SupplyChain, set to "observe", makes interpose-ci attach a dependency supply-chain
+	// record to the run: the module@version set this run pulled into the cache, cross-checked
+	// against the lockfile (go.sum). Observe only - it records, it never fails a step. Empty =
+	// off. Gated on the depsec add-on: the daemon writes this only when the org is entitled.
+	SupplyChain string `json:"supply_chain,omitempty"` // "" | "observe"
 }
 
 // DefaultRunnerPolicyPath is where the operator writes the machine policy. Root-owned on a

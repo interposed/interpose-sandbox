@@ -123,10 +123,22 @@ func main() {
 	if streamOn {
 		meta.Stream = os.Stdout // opt-in (unless the runner policy forced it): echo to the forge log
 	}
+	// Supply-chain observe (the depsec add-on): snapshot the module cache before the run so
+	// the record can show what THIS run pulled (the cache is shared across runs). Observe only,
+	// gated by the runner policy - the daemon writes "observe" here only when entitled.
+	scObserve := strings.EqualFold(strings.TrimSpace(pol.SupplyChain), "observe")
+	var scBefore map[string]ci.ObservedModule
+	if scObserve {
+		scBefore = ci.SnapshotGoModules(meta.CacheDir)
+	}
+
 	rec, err := ci.Run(context.Background(), p, pl, appr, meta)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ci: run:", err)
 		os.Exit(1)
+	}
+	if scObserve {
+		rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir)
 	}
 
 	if rpath, err := rec.WriteJSON(*records); err == nil {
