@@ -20,14 +20,15 @@ import (
 // injected-dependency signal. This is observe only: it never fails a step or changes a run's
 // outcome; it writes a record a human reads in the operator.
 //
-// v1 covers Go. The module cache is shared and persistent across runs (see cacheRedirect), so
-// "what THIS run pulled" is a before/after diff of the cache, not a point-in-time listing.
+// Covers Go (module cache) and npm (_cacache). The caches are shared and persistent across runs
+// (see cacheRedirect), so "what THIS run pulled" is a before/after diff, not a point-in-time list.
 
-// ObservedModule is one module@version seen in the Go module cache, with its content hash.
+// ObservedModule is one package@version seen in a dependency cache, with its content hash.
 type ObservedModule struct {
-	Path    string `json:"path"`
-	Version string `json:"version"`
-	Hash    string `json:"hash,omitempty"` // go module h1: hash, from the cache .ziphash
+	Path      string `json:"path"`
+	Version   string `json:"version"`
+	Hash      string `json:"hash,omitempty"`      // go module h1: / npm integrity (sri)
+	Ecosystem string `json:"ecosystem,omitempty"` // "go" | "npm"
 }
 
 // key is the "path@version" identity shared by the cache and the lockfile.
@@ -62,16 +63,64 @@ type ScanResult struct {
 	Note     string        `json:"note,omitempty"`
 }
 
-// ObserveSupplyChain builds the observe record for a finished Go run: the modules added to the
-// cache during the run (after minus before), cross-checked against workdir/go.sum. Best-effort
-// and non-fatal - any trouble yields a record carrying a Note rather than failing the run.
-// before is the pre-run snapshot from SnapshotGoModules; pass nil if none was taken.
-func ObserveSupplyChain(before map[string]ObservedModule, cacheDir, workdir string) *SupplyChain {
-	after := SnapshotGoModules(cacheDir)
-	declared, declaredN := declaredGoSum(workdir)
+// ObserveSupplyChain builds the observe record for a finished run across the pipeline's
+// ecosystems (go, node): the packages added to the caches during the run (after minus before),
+// cross-checked against the lockfiles (go.sum, package-lock.json). Best-effort and non-fatal -
+// any trouble yields a record carrying a Note rather than failing the run. before is the pre-run
+// snapshot from SnapshotModules(cacheDir, runtimes); pass nil if none was taken.
+func ObserveSupplyChain(before map[string]ObservedModule, cacheDir, workdir string, runtimes []string) *SupplyChain {
+	after := SnapshotModules(cacheDir, runtimes)
+	declared := map[string]bool{}
+	declaredN := 0
+	var ecos []string
+	if hasRuntime(runtimes, "go") {
+		d, n := declaredGoSum(workdir)
+		for k := range d {
+			declared[k] = true
+		}
+		declaredN += n
+		ecos = append(ecos, "go")
+	}
+	if hasRuntime(runtimes, "node") {
+		d, n := declaredPackageLock(workdir)
+		for k := range d {
+			declared[k] = true
+		}
+		declaredN += n
+		ecos = append(ecos, "npm")
+	}
 	sc := supplyChainRecord(before, after, declared, declaredN)
+	sc.Ecosystem = strings.Join(ecos, "+") // "", "go", "npm", or "go+npm"
 	sc.Scan = runDepScan(workdir)
 	return sc
+}
+
+// hasRuntime reports whether a runtime group (e.g. "go", "node") is in the pipeline's list.
+func hasRuntime(runtimes []string, name string) bool {
+	for _, r := range runtimes {
+		if strings.EqualFold(strings.TrimSpace(r), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// SnapshotModules returns what is present in the dependency caches for the run's ecosystems,
+// keyed path@version. Take one snapshot before the run and one after; the difference is what the
+// run pulled (the caches are shared across runs). Best-effort: absent caches yield an empty map.
+func SnapshotModules(cacheDir string, runtimes []string) map[string]ObservedModule {
+	out := map[string]ObservedModule{}
+	if hasRuntime(runtimes, "go") {
+		for k, m := range SnapshotGoModules(cacheDir) {
+			out[k] = m
+		}
+	}
+	if hasRuntime(runtimes, "node") {
+		for k, m := range SnapshotNpmModules(cacheDir) {
+			out[k] = m
+		}
+	}
+	return out
 }
 
 // runDepScan scans the workdir's dependencies for known vulnerabilities with osv-scanner and
@@ -185,7 +234,7 @@ func supplyChainRecord(before, after map[string]ObservedModule, declared map[str
 		Undeclared: undeclared,
 	}
 	if !hasLock {
-		sc.Note = "no go.sum in the workdir; undeclared cross-check skipped"
+		sc.Note = "no lockfile in the workdir; undeclared cross-check skipped"
 	}
 	return sc
 }
@@ -218,7 +267,7 @@ func SnapshotGoModules(cacheDir string) map[string]ObservedModule {
 		if modPath == "" || version == "" {
 			return nil
 		}
-		m := ObservedModule{Path: modPath, Version: version}
+		m := ObservedModule{Path: modPath, Version: version, Ecosystem: "go"}
 		if b, e := os.ReadFile(p); e == nil {
 			m.Hash = strings.TrimSpace(string(b))
 		}
@@ -226,6 +275,116 @@ func SnapshotGoModules(cacheDir string) map[string]ObservedModule {
 		return nil
 	})
 	return out
+}
+
+// SnapshotNpmModules lists the packages present in the npm content-addressed cache under cacheDir
+// (<cacheDir>/npm/_cacache/index-v5), keyed name@version, with the npm integrity (sri) as hash.
+// Each index entry's key is a tarball-cache request URL (.../<name>/-/<base>-<version>.tgz) that
+// names exactly the package@version that was fetched. Best-effort: an absent cache yields {}.
+func SnapshotNpmModules(cacheDir string) map[string]ObservedModule {
+	out := map[string]ObservedModule{}
+	if strings.TrimSpace(cacheDir) == "" {
+		return out
+	}
+	root := filepath.Join(cacheDir, "npm", "_cacache", "index-v5")
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, e := os.ReadFile(p)
+		if e != nil {
+			return nil
+		}
+		// each line: "<hash>\t<json>" where json = {"key":"...tarball url...","integrity":"..."}
+		for _, line := range strings.Split(string(b), "\n") {
+			tab := strings.IndexByte(line, '\t')
+			if tab < 0 {
+				continue
+			}
+			var ent struct {
+				Key       string `json:"key"`
+				Integrity string `json:"integrity"`
+			}
+			if json.Unmarshal([]byte(line[tab+1:]), &ent) != nil {
+				continue
+			}
+			name, version, ok := parseNpmTarballKey(ent.Key)
+			if !ok {
+				continue
+			}
+			m := ObservedModule{Path: name, Version: version, Hash: ent.Integrity, Ecosystem: "npm"}
+			out[m.key()] = m
+		}
+		return nil
+	})
+	return out
+}
+
+// parseNpmTarballKey pulls name@version out of an npm _cacache key, e.g.
+// "make-fetch-happen:request-cache:https://registry.npmjs.org/@scope/pkg/-/pkg-1.2.3.tgz".
+// Non-tarball entries (metadata requests, no "/-/…​.tgz") return ok=false.
+func parseNpmTarballKey(key string) (name, version string, ok bool) {
+	u := key
+	if i := strings.Index(key, "request-cache:"); i >= 0 {
+		u = key[i+len("request-cache:"):]
+	}
+	if !strings.HasSuffix(u, ".tgz") {
+		return "", "", false
+	}
+	sep := strings.Index(u, "/-/")
+	if sep < 0 {
+		return "", "", false
+	}
+	left, right := u[:sep], u[sep+3:] // left=…/@scope/pkg  right=pkg-1.2.3.tgz
+	if p := strings.Index(left, "://"); p >= 0 {
+		left = left[p+3:] // host/@scope/pkg
+	}
+	slash := strings.IndexByte(left, '/')
+	if slash < 0 {
+		return "", "", false
+	}
+	name = left[slash+1:]                     // @scope/pkg | pkg
+	base := strings.TrimSuffix(right, ".tgz") // pkg-1.2.3
+	last := name
+	if k := strings.LastIndexByte(name, '/'); k >= 0 {
+		last = name[k+1:] // pkg
+	}
+	version = strings.TrimPrefix(base, last+"-")
+	if version == "" || version == base {
+		return "", "", false
+	}
+	return name, version, true
+}
+
+// declaredPackageLock parses workdir/package-lock.json (v2/v3 "packages" map) and returns the set
+// of "name@version" it pins plus the count. A key is "node_modules/<name>" (nested keys end in
+// "node_modules/<name>" too); the name is the segment after the last "node_modules/". A missing or
+// v1-only lockfile returns an empty set and 0 (cross-check then skipped).
+func declaredPackageLock(workdir string) (map[string]bool, int) {
+	set := map[string]bool{}
+	b, err := os.ReadFile(filepath.Join(workdir, "package-lock.json"))
+	if err != nil {
+		return set, 0
+	}
+	var doc struct {
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return set, 0
+	}
+	for k, v := range doc.Packages {
+		if k == "" || v.Version == "" {
+			continue // "" is the root project
+		}
+		name := k
+		if i := strings.LastIndex(k, "node_modules/"); i >= 0 {
+			name = k[i+len("node_modules/"):]
+		}
+		set[name+"@"+v.Version] = true
+	}
+	return set, len(set)
 }
 
 // declaredGoSum parses workdir/go.sum and returns the set of "path@version" it pins plus the

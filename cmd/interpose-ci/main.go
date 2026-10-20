@@ -129,7 +129,7 @@ func main() {
 	scObserve := strings.EqualFold(strings.TrimSpace(pol.SupplyChain), "observe")
 	var scBefore map[string]ci.ObservedModule
 	if scObserve {
-		scBefore = ci.SnapshotGoModules(meta.CacheDir)
+		scBefore = ci.SnapshotModules(meta.CacheDir, p.Runtimes)
 	}
 
 	rec, err := ci.Run(context.Background(), p, pl, appr, meta)
@@ -138,7 +138,7 @@ func main() {
 		os.Exit(1)
 	}
 	if scObserve {
-		rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir)
+		rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes)
 	}
 
 	if rpath, err := rec.WriteJSON(*records); err == nil {

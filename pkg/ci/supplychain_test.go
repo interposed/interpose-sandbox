@@ -139,6 +139,76 @@ func TestParseOSVReportEmpty(t *testing.T) {
 	}
 }
 
+// parseNpmTarballKey pulls name@version from an npm _cacache key, scoped and unscoped, and
+// rejects non-tarball (metadata) entries.
+func TestParseNpmTarballKey(t *testing.T) {
+	cases := []struct {
+		key, name, version string
+		ok                 bool
+	}{
+		{"make-fetch-happen:request-cache:https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz", "lodash", "4.17.21", true},
+		{"make-fetch-happen:request-cache:https://registry.npmjs.org/@babel/core/-/core-7.24.0.tgz", "@babel/core", "7.24.0", true},
+		{"make-fetch-happen:request-cache:https://registry.npmjs.org/lodash", "", "", false}, // metadata, not a tarball
+		{"something-else", "", "", false},
+	}
+	for _, c := range cases {
+		n, v, ok := parseNpmTarballKey(c.key)
+		if ok != c.ok || n != c.name || v != c.version {
+			t.Fatalf("parseNpmTarballKey(%q) = (%q,%q,%v), want (%q,%q,%v)", c.key, n, v, ok, c.name, c.version, c.ok)
+		}
+	}
+}
+
+// SnapshotNpmModules reads the _cacache index, keeping only tarball entries, with the integrity.
+func TestSnapshotNpmModules(t *testing.T) {
+	cache := t.TempDir()
+	dir := filepath.Join(cache, "npm", "_cacache", "index-v5", "aa", "bb")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// two tarball entries + one metadata entry (must be ignored)
+	lines := "deadbeef\t" + `{"key":"make-fetch-happen:request-cache:https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz","integrity":"sha512-lod="}` + "\n" +
+		"cafebabe\t" + `{"key":"make-fetch-happen:request-cache:https://registry.npmjs.org/@babel/core/-/core-7.24.0.tgz","integrity":"sha512-bab="}` + "\n" +
+		"f00df00d\t" + `{"key":"make-fetch-happen:request-cache:https://registry.npmjs.org/lodash","integrity":"sha512-meta="}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "idx"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := SnapshotNpmModules(cache)
+	if len(got) != 2 {
+		t.Fatalf("want 2 packages (metadata ignored), got %d: %+v", len(got), got)
+	}
+	lo, ok := got["lodash@4.17.21"]
+	if !ok || lo.Hash != "sha512-lod=" || lo.Ecosystem != "npm" {
+		t.Fatalf("lodash entry wrong: %+v", lo)
+	}
+	if _, ok := got["@babel/core@7.24.0"]; !ok {
+		t.Fatalf("missing @babel/core@7.24.0: %+v", got)
+	}
+}
+
+// declaredPackageLock reads the v2/v3 "packages" map, taking the name after the last node_modules/.
+func TestDeclaredPackageLock(t *testing.T) {
+	wd := t.TempDir()
+	lock := `{"name":"app","lockfileVersion":3,"packages":{
+	  "":{"name":"app","version":"1.0.0"},
+	  "node_modules/lodash":{"version":"4.17.21"},
+	  "node_modules/@babel/core":{"version":"7.24.0"},
+	  "node_modules/a/node_modules/b":{"version":"2.0.0"}
+	}}`
+	if err := os.WriteFile(filepath.Join(wd, "package-lock.json"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set, n := declaredPackageLock(wd)
+	if n != 3 {
+		t.Fatalf("want 3 declared (root skipped), got %d: %+v", n, set)
+	}
+	for _, k := range []string{"lodash@4.17.21", "@babel/core@7.24.0", "b@2.0.0"} {
+		if !set[k] {
+			t.Fatalf("declared set missing %q: %+v", k, set)
+		}
+	}
+}
+
 // declaredGoSum folds the "/go.mod" line into the same path@version key and counts distinct
 // modules.
 func TestDeclaredGoSumFoldsGoModLine(t *testing.T) {
