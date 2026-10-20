@@ -42,6 +42,9 @@ type Meta struct {
 	RunID  string `json:"run_id"`
 	Commit string `json:"commit,omitempty"`
 	Digest string `json:"digest,omitempty"`
+	// Repo is the source repository the run builds (GITHUB_REPOSITORY, "owner/name"); used to
+	// resolve repo-scoped supply-chain pins. Empty outside a forge.
+	Repo string `json:"-"`
 	// Env is the curated environment every step's cell receives (non-secret CI context
 	// only). Set by the caller via CuratedEnv; it does NOT come from the pipeline JSON,
 	// and cells never inherit the process environment - so a mapped secret or a runner
@@ -156,6 +159,7 @@ type RunRecord struct {
 	Pipeline string       `json:"pipeline"`
 	Commit   string       `json:"commit,omitempty"`
 	Digest   string       `json:"digest,omitempty"`
+	Repo     string       `json:"repo,omitempty"`    // source repository (owner/name): per-repo pins + display
 	RunURL   string       `json:"run_url,omitempty"` // forge job/run URL (link out from the operator)
 	OK       bool         `json:"ok"`
 	Started  time.Time    `json:"started"`
@@ -182,6 +186,7 @@ func Run(ctx context.Context, p Pipeline, pl *pool.Pool, appr Approver, meta Met
 		Pipeline: p.Name,
 		Commit:   meta.Commit,
 		Digest:   meta.Digest,
+		Repo:     meta.Repo,
 		RunURL:   meta.RunURL,
 		Started:  time.Now(),
 		OK:       true,

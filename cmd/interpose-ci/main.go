@@ -119,7 +119,7 @@ func main() {
 	pl := pool.New(pool.Config{MaxConcurrent: *maxc})
 	// Cells get a curated, non-secret CI environment only - never interpose-ci's own
 	// process env (which may hold a mapped secret or a runner token).
-	meta := ci.Meta{Commit: *commit, Digest: *digest, Env: ci.CuratedEnv(os.Environ()), RunURL: forgeRunURL(), CacheDir: ciDir("cache")}
+	meta := ci.Meta{Commit: *commit, Digest: *digest, Repo: os.Getenv("GITHUB_REPOSITORY"), Env: ci.CuratedEnv(os.Environ()), RunURL: forgeRunURL(), CacheDir: ciDir("cache")}
 	if streamOn {
 		meta.Stream = os.Stdout // opt-in (unless the runner policy forced it): echo to the forge log
 	}
@@ -134,24 +134,26 @@ func main() {
 		meta.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano()) // one id across fetch + build + record
 		scBefore = ci.SnapshotModules(meta.CacheDir, p.Runtimes)
 	}
+	// Resolve the pin set for THIS run's repository (its own pins + the org-wide "*" blessed layer).
+	scPins := ci.ResolvePins(pol.Pins, meta.Repo)
 
 	// Enforce pre-check (verify-then-build): fetch the deps into the cache, then verify the fetched
 	// digests against the signed pins BEFORE the build runs. On a violation the build never runs.
-	if scMode == "enforce" && len(pol.Pins) > 0 {
+	if scMode == "enforce" && len(scPins) > 0 {
 		if fs := ci.FetchSteps(p.Runtimes); len(fs) > 0 {
 			fetchPipe := ci.Pipeline{Name: p.Name, Workdir: p.Workdir, Runtimes: p.Runtimes, Net: p.Net, Steps: fs}
 			if _, ferr := ci.Run(context.Background(), fetchPipe, pl, ci.AutoApprove{}, meta); ferr != nil {
 				fmt.Fprintln(os.Stderr, "ci: supply-chain fetch:", ferr)
 			}
 			afterFetch := ci.SnapshotModules(meta.CacheDir, p.Runtimes)
-			if viol := ci.VerifyPins(scBefore, afterFetch, pol.Pins); len(viol) > 0 {
+			if viol := ci.VerifyPins(scBefore, afterFetch, scPins); len(viol) > 0 {
 				now := time.Now()
 				rec := ci.RunRecord{
-					RunID: meta.RunID, Pipeline: p.Name, Commit: meta.Commit, Digest: meta.Digest, RunURL: meta.RunURL,
+					RunID: meta.RunID, Pipeline: p.Name, Commit: meta.Commit, Digest: meta.Digest, Repo: meta.Repo, RunURL: meta.RunURL,
 					OK: false, Started: now, Finished: now,
 					Steps: []ci.StepResult{{Name: "supply-chain: pin check", ExitCode: 1, Skipped: true, SkipReason: "blocked: pinned module fetched at an unapproved digest", Started: now, Finished: now}},
 				}
-				rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, pol.Pins, scMode)
+				rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, scPins, scMode)
 				if rpath, werr := rec.WriteJSON(*records); werr == nil {
 					fmt.Printf("record: %s\n", rpath)
 				}
@@ -170,7 +172,7 @@ func main() {
 		os.Exit(1)
 	}
 	if scOn {
-		rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, pol.Pins, scMode)
+		rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, scPins, scMode)
 	}
 
 	if rpath, err := rec.WriteJSON(*records); err == nil {

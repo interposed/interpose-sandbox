@@ -132,6 +132,24 @@ func VerifyPins(before, after map[string]ObservedModule, pins map[string]string)
 	return out
 }
 
+// ResolvePins flattens the repository-scoped pin set for one repo: the repo's own approved digests
+// overlaid with the org-wide "*" blessed layer, which WINS (a repo cannot loosen an org pin). repo
+// is GITHUB_REPOSITORY ("owner/name"); an empty or unlisted repo yields just the org layer. The
+// result feeds VerifyPins/ObserveSupplyChain, so the rest of the pipeline stays path->digest.
+func ResolvePins(pins map[string]map[string]string, repo string) map[string]string {
+	out := map[string]string{}
+	if pins == nil {
+		return out
+	}
+	for k, v := range pins[repo] {
+		out[k] = v
+	}
+	for k, v := range pins["*"] { // org-wide blessed layer takes precedence over a repo's own
+		out[k] = v
+	}
+	return out
+}
+
 // FetchSteps returns the per-ecosystem dependency-fetch steps for the enforce pre-check: they
 // populate the caches from the lockfiles so the pin verify sees exactly what the build will use,
 // BEFORE the build runs. Bare tool names resolve on the cell's base PATH.
