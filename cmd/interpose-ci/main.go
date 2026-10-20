@@ -123,10 +123,54 @@ func main() {
 	if streamOn {
 		meta.Stream = os.Stdout // opt-in (unless the runner policy forced it): echo to the forge log
 	}
+	// Supply-chain (the depsec add-on): snapshot the caches before the run so the record can show
+	// what THIS run pulled (caches are shared across runs). Gated by the runner policy - the daemon
+	// writes the mode only when the org is entitled. "observe" records; "enforce" also runs a
+	// pin pre-check that fails BEFORE the build when a pinned module is fetched at an unapproved digest.
+	scMode := strings.ToLower(strings.TrimSpace(pol.SupplyChain)) // "" | "observe" | "enforce"
+	scOn := scMode == "observe" || scMode == "enforce"
+	var scBefore map[string]ci.ObservedModule
+	if scOn {
+		meta.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano()) // one id across fetch + build + record
+		scBefore = ci.SnapshotModules(meta.CacheDir, p.Runtimes)
+	}
+
+	// Enforce pre-check (verify-then-build): fetch the deps into the cache, then verify the fetched
+	// digests against the signed pins BEFORE the build runs. On a violation the build never runs.
+	if scMode == "enforce" && len(pol.Pins) > 0 {
+		if fs := ci.FetchSteps(p.Runtimes); len(fs) > 0 {
+			fetchPipe := ci.Pipeline{Name: p.Name, Workdir: p.Workdir, Runtimes: p.Runtimes, Net: p.Net, Steps: fs}
+			if _, ferr := ci.Run(context.Background(), fetchPipe, pl, ci.AutoApprove{}, meta); ferr != nil {
+				fmt.Fprintln(os.Stderr, "ci: supply-chain fetch:", ferr)
+			}
+			afterFetch := ci.SnapshotModules(meta.CacheDir, p.Runtimes)
+			if viol := ci.VerifyPins(scBefore, afterFetch, pol.Pins); len(viol) > 0 {
+				now := time.Now()
+				rec := ci.RunRecord{
+					RunID: meta.RunID, Pipeline: p.Name, Commit: meta.Commit, Digest: meta.Digest, RunURL: meta.RunURL,
+					OK: false, Started: now, Finished: now,
+					Steps: []ci.StepResult{{Name: "supply-chain: pin check", ExitCode: 1, Skipped: true, SkipReason: "blocked: pinned module fetched at an unapproved digest", Started: now, Finished: now}},
+				}
+				rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, pol.Pins, scMode)
+				if rpath, werr := rec.WriteJSON(*records); werr == nil {
+					fmt.Printf("record: %s\n", rpath)
+				}
+				fmt.Printf("\nsupply-chain: BLOCKED - %d pinned module(s) fetched at an unapproved digest; build not run\n", len(viol))
+				for _, v := range viol {
+					fmt.Printf("  %s %s@%s\n    got  %s\n    want %s\n", v.Ecosystem, v.Package, v.Version, v.Got, v.Want)
+				}
+				os.Exit(1)
+			}
+		}
+	}
+
 	rec, err := ci.Run(context.Background(), p, pl, appr, meta)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ci: run:", err)
 		os.Exit(1)
+	}
+	if scOn {
+		rec.SupplyChain = ci.ObserveSupplyChain(scBefore, meta.CacheDir, p.Workdir, p.Runtimes, pol.Pins, scMode)
 	}
 
 	if rpath, err := rec.WriteJSON(*records); err == nil {

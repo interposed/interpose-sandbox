@@ -68,12 +68,12 @@ type Meta struct {
 // same stance the cell takes for filesystem and network.
 func CuratedEnv(parent []string) []string {
 	allow := map[string]bool{
-		"CI":                true,
-		"GITHUB_SHA":        true,
-		"GITHUB_REF":        true,
-		"GITHUB_REF_NAME":   true,
-		"GITHUB_REF_TYPE":   true,
-		"GITHUB_REPOSITORY": true,
+		"CI":                      true,
+		"GITHUB_SHA":              true,
+		"GITHUB_REF":              true,
+		"GITHUB_REF_NAME":         true,
+		"GITHUB_REF_TYPE":         true,
+		"GITHUB_REPOSITORY":       true,
 		"GITHUB_REPOSITORY_OWNER": true,
 		"GITHUB_RUN_ID":           true,
 		"GITHUB_RUN_NUMBER":       true,
@@ -161,6 +161,10 @@ type RunRecord struct {
 	Started  time.Time    `json:"started"`
 	Finished time.Time    `json:"finished"`
 	Steps    []StepResult `json:"steps"`
+	// SupplyChain is the observe-mode dependency record for the run (the depsec add-on):
+	// the modules this run pulled, cross-checked against the lockfile. nil when the runner
+	// policy does not enable it. Observe only - it never affects OK. See supplychain.go.
+	SupplyChain *SupplyChain `json:"supply_chain,omitempty"`
 }
 
 // Run executes the pipeline. Steps run in order; the pipeline stops at the
