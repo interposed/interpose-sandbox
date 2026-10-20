@@ -1,11 +1,16 @@
 package ci
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Supply-chain observation - the depsec add-on, observe mode. After a run, interpose-ci
@@ -35,7 +40,26 @@ type SupplyChain struct {
 	Observed   []ObservedModule `json:"observed"`             // module@version this run pulled
 	Declared   int              `json:"declared"`             // modules pinned in the lockfile
 	Undeclared []ObservedModule `json:"undeclared,omitempty"` // pulled but absent from the lockfile
+	Scan       *ScanResult      `json:"scan,omitempty"`       // dependency vuln scan (osv-scanner)
 	Note       string           `json:"note,omitempty"`
+}
+
+// VulnFinding is one vulnerable package reported by a dependency scan.
+type VulnFinding struct {
+	Package  string   `json:"package"`
+	Version  string   `json:"version,omitempty"`
+	IDs      []string `json:"ids"`                // OSV / CVE / GHSA ids
+	Severity string   `json:"severity,omitempty"` // tool-reported, e.g. HIGH or a CVSS score
+	Summary  string   `json:"summary,omitempty"`
+}
+
+// ScanResult is the dependency vulnerability scan folded into the supply-chain record.
+// Observe only: it records what the scanner found, it never fails the run.
+type ScanResult struct {
+	Tool     string        `json:"tool"`               // "osv-scanner"
+	Ran      bool          `json:"ran"`                // false = tool absent / errored / timed out
+	Findings []VulnFinding `json:"findings,omitempty"` // vulnerable packages (empty = clean)
+	Note     string        `json:"note,omitempty"`
 }
 
 // ObserveSupplyChain builds the observe record for a finished Go run: the modules added to the
@@ -45,7 +69,94 @@ type SupplyChain struct {
 func ObserveSupplyChain(before map[string]ObservedModule, cacheDir, workdir string) *SupplyChain {
 	after := SnapshotGoModules(cacheDir)
 	declared, declaredN := declaredGoSum(workdir)
-	return supplyChainRecord(before, after, declared, declaredN)
+	sc := supplyChainRecord(before, after, declared, declaredN)
+	sc.Scan = runDepScan(workdir)
+	return sc
+}
+
+// runDepScan scans the workdir's dependencies for known vulnerabilities with osv-scanner and
+// folds the result into the record. Best-effort and observe-only: a missing scanner, a scan
+// error, or a timeout yields Ran=false with a Note, never a failure. osv-scanner exits
+// non-zero WHEN IT FINDS vulnerabilities, which is a successful scan for us, so its output is
+// parsed regardless of exit code.
+func runDepScan(workdir string) *ScanResult {
+	bin, err := exec.LookPath("osv-scanner")
+	if err != nil {
+		return &ScanResult{Tool: "osv-scanner", Ran: false, Note: "osv-scanner not installed"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, bin, "--format", "json", "-r", workdir).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return &ScanResult{Tool: "osv-scanner", Ran: false, Note: "osv-scanner timed out"}
+	}
+	if len(out) == 0 {
+		return &ScanResult{Tool: "osv-scanner", Ran: false, Note: "osv-scanner produced no output"}
+	}
+	findings, perr := parseOSVReport(out)
+	if perr != nil {
+		return &ScanResult{Tool: "osv-scanner", Ran: false, Note: "parse osv-scanner output: " + perr.Error()}
+	}
+	return &ScanResult{Tool: "osv-scanner", Ran: true, Findings: findings, Note: fmt.Sprintf("%d vulnerable package(s)", len(findings))}
+}
+
+// parseOSVReport extracts the vulnerable packages from osv-scanner's --format json output. Pure
+// (no I/O), so the tests pin it against a real osv-scanner document. A package with no
+// vulnerabilities is skipped; severity prefers the per-vuln database_specific.severity, then
+// the group's max_severity (a CVSS score).
+func parseOSVReport(b []byte) ([]VulnFinding, error) {
+	var doc struct {
+		Results []struct {
+			Packages []struct {
+				Package struct {
+					Name    string `json:"name"`
+					Version string `json:"version"`
+				} `json:"package"`
+				Vulnerabilities []struct {
+					ID               string `json:"id"`
+					Summary          string `json:"summary"`
+					DatabaseSpecific struct {
+						Severity string `json:"severity"`
+					} `json:"database_specific"`
+				} `json:"vulnerabilities"`
+				Groups []struct {
+					MaxSeverity string `json:"max_severity"`
+				} `json:"groups"`
+			} `json:"packages"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	var out []VulnFinding
+	for _, res := range doc.Results {
+		for _, p := range res.Packages {
+			if len(p.Vulnerabilities) == 0 {
+				continue
+			}
+			f := VulnFinding{Package: p.Package.Name, Version: p.Package.Version}
+			for _, v := range p.Vulnerabilities {
+				f.IDs = append(f.IDs, v.ID)
+				if f.Summary == "" {
+					f.Summary = v.Summary
+				}
+				if f.Severity == "" && v.DatabaseSpecific.Severity != "" {
+					f.Severity = v.DatabaseSpecific.Severity
+				}
+			}
+			if f.Severity == "" {
+				for _, g := range p.Groups {
+					if g.MaxSeverity != "" {
+						f.Severity = g.MaxSeverity
+						break
+					}
+				}
+			}
+			out = append(out, f)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Package < out[j].Package })
+	return out, nil
 }
 
 // supplyChainRecord is the pure decision: diff the snapshots to find what the run pulled, then

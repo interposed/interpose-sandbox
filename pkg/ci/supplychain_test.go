@@ -93,6 +93,52 @@ func TestSnapshotGoModulesMissingCacheIsEmptyNotError(t *testing.T) {
 	}
 }
 
+// parseOSVReport pulls vulnerable packages out of osv-scanner's JSON: it skips clean packages,
+// collects the ids, and takes severity from database_specific first, then the group max.
+func TestParseOSVReport(t *testing.T) {
+	doc := `{"results":[{"source":{"path":"/w/go.sum","type":"lockfile"},"packages":[
+	  {"package":{"name":"golang.org/x/text","version":"v0.3.0","ecosystem":"Go"},
+	   "vulnerabilities":[{"id":"GHSA-5rcv-m4m3-hfh7","aliases":["CVE-2020-14040"],"summary":"loop in x/text","database_specific":{"severity":"HIGH"}}],
+	   "groups":[{"ids":["GHSA-5rcv-m4m3-hfh7"],"max_severity":"7.5"}]},
+	  {"package":{"name":"rsc.io/quote","version":"v1.5.2","ecosystem":"Go"},"vulnerabilities":[]},
+	  {"package":{"name":"example.com/foo","version":"v1.0.0","ecosystem":"Go"},
+	   "vulnerabilities":[{"id":"GHSA-xxxx","summary":"bad"}],
+	   "groups":[{"ids":["GHSA-xxxx"],"max_severity":"9.8"}]}
+	]}]}`
+
+	findings, err := parseOSVReport([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("want 2 vulnerable packages (clean one skipped), got %d: %+v", len(findings), findings)
+	}
+	// sorted by package name: example.com/foo, golang.org/x/text
+	foo, text := findings[0], findings[1]
+	if foo.Package != "example.com/foo" || foo.Severity != "9.8" {
+		t.Fatalf("foo: want example.com/foo sev 9.8 (from group max), got %+v", foo)
+	}
+	if text.Package != "golang.org/x/text" || text.Severity != "HIGH" {
+		t.Fatalf("text: want golang.org/x/text sev HIGH (from database_specific), got %+v", text)
+	}
+	if len(text.IDs) != 1 || text.IDs[0] != "GHSA-5rcv-m4m3-hfh7" {
+		t.Fatalf("text ids: %+v", text.IDs)
+	}
+	if text.Summary == "" {
+		t.Fatalf("want a summary carried through")
+	}
+}
+
+func TestParseOSVReportEmpty(t *testing.T) {
+	findings, err := parseOSVReport([]byte(`{"results":[]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("want no findings, got %+v", findings)
+	}
+}
+
 // declaredGoSum folds the "/go.mod" line into the same path@version key and counts distinct
 // modules.
 func TestDeclaredGoSumFoldsGoModLine(t *testing.T) {
