@@ -32,11 +32,13 @@ type RunnerPolicy struct {
 	// module is fetched at an unapproved digest (see Pins). Empty = off. Gated on the depsec
 	// add-on: the daemon writes this only when the org is entitled.
 	SupplyChain string `json:"supply_chain,omitempty"` // "" | "observe" | "enforce"
-	// Pins maps a module/package path to its approved content digest (go h1: / npm sri). With
-	// SupplyChain "enforce", a dependency this run fetches whose path is pinned but whose digest
-	// differs fails the run before the build; with "observe" the mismatch is only recorded. Empty =
-	// no pins. The daemon writes these from the org's signed pin set (promoted from observe).
-	Pins map[string]string `json:"pins,omitempty"`
+	// Pins are approved content digests SCOPED BY REPOSITORY: Pins[repo][path] = digest (go h1: /
+	// npm sri). The key "*" is an org-wide "blessed" layer applied to every repo and not
+	// overridable by a repo. A run resolves its set with ResolvePins(Pins, repo) where repo is
+	// GITHUB_REPOSITORY. With SupplyChain "enforce", a dependency this run fetches whose resolved
+	// pin digest differs fails the run before the build; "observe" only records it. The daemon
+	// writes these from the org's signed pin set (promoted from observe); a repo never holds its own.
+	Pins map[string]map[string]string `json:"pins,omitempty"`
 }
 
 // DefaultRunnerPolicyPath is where the operator writes the machine policy. Root-owned on a

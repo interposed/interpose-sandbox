@@ -47,6 +47,44 @@ func TestPipelineAllStepsPass(t *testing.T) {
 	}
 }
 
+// captureApprover records the request it was asked to decide, so we can assert the
+// approver sees the run's supply-chain risk (and does not approve blind).
+type captureApprover struct {
+	got ReleaseRequest
+	dec Decision
+}
+
+func (c *captureApprover) Approve(_ context.Context, req ReleaseRequest) (Decision, error) {
+	c.got = req
+	return c.dec, nil
+}
+
+func TestReleaseRequestCarriesSupplyChainRisk(t *testing.T) {
+	sc := &SupplyChain{
+		Mode:       "enforce",
+		Ecosystem:  "go",
+		Undeclared: []ObservedModule{{Path: "evil.test/pkg", Version: "v1.0.0", Ecosystem: "go"}},
+		Scan:       &ScanResult{Tool: "osv-scanner", Ran: true, Findings: []VulnFinding{{Package: "golang.org/x/text", IDs: []string{"GO-2020-0015"}, Severity: "MODERATE"}}},
+	}
+	p := Pipeline{Name: "deploy", Workdir: t.TempDir(), Steps: []Step{
+		{Name: "build", Run: []string{"echo", "build"}},
+		{Name: "release", Run: []string{"echo", "release"}, Release: true},
+	}}
+	appr := &captureApprover{dec: Approved}
+	if _, err := Run(context.Background(), p, fakePool(), appr, Meta{RunID: "rsc", SupplyChain: sc}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if appr.got.SupplyChain == nil {
+		t.Fatal("approver saw no supply-chain summary — approval would be blind")
+	}
+	if n := len(appr.got.SupplyChain.Undeclared); n != 1 {
+		t.Fatalf("want 1 undeclared on the request, got %d", n)
+	}
+	if appr.got.SupplyChain.Scan == nil || len(appr.got.SupplyChain.Scan.Findings) != 1 {
+		t.Fatalf("vuln findings did not reach the approver: %+v", appr.got.SupplyChain.Scan)
+	}
+}
+
 func TestReleaseStepApprovedRuns(t *testing.T) {
 	p := Pipeline{Name: "deploy", Workdir: t.TempDir(), Steps: []Step{
 		{Name: "build", Run: []string{"echo", "build"}},

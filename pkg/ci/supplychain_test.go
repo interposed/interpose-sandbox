@@ -93,6 +93,36 @@ func TestSnapshotGoModulesMissingCacheIsEmptyNotError(t *testing.T) {
 	}
 }
 
+// ResolvePins flattens repo-scoped pins: a repo gets its own pins plus the org-wide "*" layer, and
+// the org layer WINS where both pin the same path (a repo cannot loosen an org pin).
+func TestResolvePins(t *testing.T) {
+	pins := map[string]map[string]string{
+		"*":           {"golang.org/x/crypto": "h1:ORG"},
+		"owner/repoA": {"golang.org/x/text": "h1:A"},
+		"owner/repoB": {"golang.org/x/text": "h1:B"},
+	}
+	a := ResolvePins(pins, "owner/repoA")
+	if a["golang.org/x/text"] != "h1:A" || a["golang.org/x/crypto"] != "h1:ORG" || len(a) != 2 {
+		t.Fatalf("repoA resolve wrong: %+v", a)
+	}
+	b := ResolvePins(pins, "owner/repoB")
+	if b["golang.org/x/text"] != "h1:B" {
+		t.Fatalf("repoB should see its own x/text pin, got %+v", b)
+	}
+	other := ResolvePins(pins, "owner/unlisted")
+	if len(other) != 1 || other["golang.org/x/crypto"] != "h1:ORG" {
+		t.Fatalf("unlisted repo should get only the org layer, got %+v", other)
+	}
+	// org "*" wins over a repo pin on the same path
+	win := ResolvePins(map[string]map[string]string{"*": {"p": "h1:ORG"}, "r": {"p": "h1:REPO"}}, "r")
+	if win["p"] != "h1:ORG" {
+		t.Fatalf("org blessed layer must win, got %q", win["p"])
+	}
+	if len(ResolvePins(nil, "r")) != 0 {
+		t.Fatalf("nil pins -> empty")
+	}
+}
+
 // VerifyPins flags a module THIS run fetched whose path is pinned to a different digest, skips
 // pinned-and-matching and unpinned modules, and ignores modules cached before the run.
 func TestVerifyPins(t *testing.T) {

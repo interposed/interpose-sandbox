@@ -40,6 +40,7 @@ type SupplyChain struct {
 	Ecosystem     string           `json:"ecosystem"`                // "go" (v1)
 	Observed      []ObservedModule `json:"observed"`                 // module@version this run pulled
 	Declared      int              `json:"declared"`                 // modules pinned in the lockfile
+	Libraries     []string         `json:"libraries,omitempty"`      // every declared module (path@version), so the full dependency set shows even on a warm cache
 	Undeclared    []ObservedModule `json:"undeclared,omitempty"`     // pulled but absent from the lockfile
 	Scan          *ScanResult      `json:"scan,omitempty"`           // dependency vuln scan (osv-scanner)
 	PinViolations []PinViolation   `json:"pin_violations,omitempty"` // pinned path fetched at an unapproved digest
@@ -129,6 +130,24 @@ func VerifyPins(before, after map[string]ObservedModule, pins map[string]string)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Package < out[j].Package })
+	return out
+}
+
+// ResolvePins flattens the repository-scoped pin set for one repo: the repo's own approved digests
+// overlaid with the org-wide "*" blessed layer, which WINS (a repo cannot loosen an org pin). repo
+// is GITHUB_REPOSITORY ("owner/name"); an empty or unlisted repo yields just the org layer. The
+// result feeds VerifyPins/ObserveSupplyChain, so the rest of the pipeline stays path->digest.
+func ResolvePins(pins map[string]map[string]string, repo string) map[string]string {
+	out := map[string]string{}
+	if pins == nil {
+		return out
+	}
+	for k, v := range pins[repo] {
+		out[k] = v
+	}
+	for k, v := range pins["*"] { // org-wide blessed layer takes precedence over a repo's own
+		out[k] = v
+	}
 	return out
 }
 
@@ -277,11 +296,17 @@ func supplyChainRecord(before, after map[string]ObservedModule, declared map[str
 	}
 	sort.Slice(observed, func(i, j int) bool { return observed[i].key() < observed[j].key() })
 	sort.Slice(undeclared, func(i, j int) bool { return undeclared[i].key() < undeclared[j].key() })
+	libs := make([]string, 0, len(declared))
+	for k := range declared {
+		libs = append(libs, k)
+	}
+	sort.Strings(libs)
 	sc := &SupplyChain{
 		Mode:       "observe",
 		Ecosystem:  "go",
 		Observed:   observed,
 		Declared:   declaredN,
+		Libraries:  libs,
 		Undeclared: undeclared,
 	}
 	if !hasLock {
