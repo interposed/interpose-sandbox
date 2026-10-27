@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/mdlayher/vsock"
@@ -62,8 +63,28 @@ func bringUpMounts() {
 	_ = unix.Mount("tmpfs", "/tmp", "tmpfs", unix.MS_NOSUID, "mode=1777")
 }
 
+// startEnforcer launches the in-guest interpose daemon so processes in this VM
+// are governed by the BPF-LSM enforcer running ON our guest kernel (the host's
+// BPF cannot see in-VM processes, so enforcement must live here). Best-effort:
+// if the binary or kernel support is missing, the agent still serves. The box
+// has no YubiKey, so --no-seal; the license is staged in the rootfs.
+func startEnforcer() {
+	if _, err := os.Stat("/usr/local/bin/interpose"); err != nil {
+		return
+	}
+	cmd := exec.Command("/usr/local/bin/interpose", "serve", "--no-seal", "--enforcer=auto")
+	cmd.Env = append(os.Environ(), "HOME=/root", "PATH=/bin:/sbin:/usr/bin:/usr/sbin")
+	if f, err := os.Create("/run/interpose-serve.log"); err == nil {
+		cmd.Stdout, cmd.Stderr = f, f
+	}
+	if err := cmd.Start(); err == nil {
+		time.Sleep(1500 * time.Millisecond) // let the enforcer attach its programs
+	}
+}
+
 func main() {
 	bringUpMounts()
+	startEnforcer()
 
 	l, err := vsock.Listen(vsockPort, nil)
 	if err != nil {
