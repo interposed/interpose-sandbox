@@ -84,6 +84,10 @@ func startEnforcer() {
 }
 
 func main() {
+	// PID 1 inherits no PATH, so exec.Command("bash"/"claude") would fail its
+	// LookPath. Set a sane PATH on the agent itself so bare template commands
+	// from the host resolve.
+	_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/bin:/sbin:/usr/bin:/usr/sbin")
 	bringUpMounts()
 	startEnforcer()
 
@@ -127,7 +131,7 @@ func serve(c io.ReadWriteCloser) {
 	cmd := exec.Command(req.Cmd[0], req.Cmd[1:]...)
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color", "HOME=/root",
-		"PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+		"PATH=/usr/local/sbin:/usr/local/bin:/bin:/sbin:/usr/bin:/usr/sbin",
 	)
 	cmd.Env = append(cmd.Env, req.Env...) // token etc., RAM-only on the child
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(req.Cols), Rows: uint16(req.Rows)})
