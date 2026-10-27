@@ -21,8 +21,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"net"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/creack/pty"
@@ -31,8 +33,19 @@ import (
 )
 
 // vsockPort is the guest listen port; the host reaches it via the Firecracker
-// vsock UDS with a "CONNECT 1024" handshake.
-const vsockPort = 1024
+// vsock UDS with a "CONNECT 1024" handshake. controlPort carries out-of-band
+// control messages (resize) so the main stream stays raw PTY bytes.
+const (
+	vsockPort   = 1024
+	controlPort = 1025
+)
+
+// activePTY is the most-recently-started session PTY, resized by the control
+// listener. One PTY per VM in the session model, so "most recent" is it.
+var (
+	activeMu  sync.Mutex
+	activePTY *os.File
+)
 
 type request struct {
 	Op   string   `json:"op"`
@@ -111,6 +124,7 @@ func main() {
 		select {} // PID 1 must not exit, or the kernel panics.
 	}
 	os.Stdout.WriteString("interpose-guest: listening on vsock port 1024\r\n")
+	go serveControl()
 
 	for {
 		c, err := l.Accept()
@@ -118,6 +132,41 @@ func main() {
 			continue
 		}
 		go serve(c)
+	}
+}
+
+// serveControl handles out-of-band control (resize) on a second vsock port so
+// the main attach stream stays raw PTY bytes. One JSON line per connection.
+func serveControl() {
+	cl, err := vsock.Listen(controlPort, nil)
+	if err != nil {
+		return
+	}
+	for {
+		c, err := cl.Accept()
+		if err != nil {
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			line, err := bufio.NewReader(c).ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			var r struct {
+				Cols uint16 `json:"cols"`
+				Rows uint16 `json:"rows"`
+			}
+			if json.Unmarshal(line, &r) != nil || r.Cols == 0 || r.Rows == 0 {
+				return
+			}
+			activeMu.Lock()
+			p := activePTY
+			activeMu.Unlock()
+			if p != nil {
+				_ = pty.Setsize(p, &pty.Winsize{Cols: r.Cols, Rows: r.Rows})
+			}
+		}(c)
 	}
 }
 
@@ -154,6 +203,9 @@ func serve(c io.ReadWriteCloser) {
 		return
 	}
 	defer func() { _ = ptmx.Close() }()
+	activeMu.Lock()
+	activePTY = ptmx
+	activeMu.Unlock()
 
 	// host -> PTY (drain anything buffered past the request line first)
 	go func() {
