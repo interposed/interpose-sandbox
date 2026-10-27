@@ -81,13 +81,18 @@ func bringUpMounts() {
 	// the in-guest enforcer write only to these tmpfs layers, which are RAM-only
 	// and discarded on teardown. The license lives under /var/lib/interpose, so
 	// read it before shadowing that dir and restore it onto the fresh tmpfs.
-	lic, _ := os.ReadFile("/var/lib/interpose/license.json")
+	preserve := map[string][]byte{}
+	for _, f := range []string{"/var/lib/interpose/license.json", "/var/lib/interpose/config.yaml"} {
+		if b, err := os.ReadFile(f); err == nil {
+			preserve[f] = b
+		}
+	}
 	for _, d := range []string{"/root", "/var/tmp", "/var/log", "/var/lib/interpose", "/home"} {
 		_ = os.MkdirAll(d, 0o755)
 		_ = unix.Mount("tmpfs", d, "tmpfs", 0, "")
 	}
-	if len(lic) > 0 {
-		_ = os.WriteFile("/var/lib/interpose/license.json", lic, 0o600)
+	for f, b := range preserve {
+		_ = os.WriteFile(f, b, 0o600)
 	}
 }
 
@@ -101,12 +106,32 @@ func startEnforcer() {
 		return
 	}
 	cmd := exec.Command("/usr/local/bin/interpose", "serve", "--no-seal", "--enforcer=auto")
-	cmd.Env = append(os.Environ(), "HOME=/root", "PATH=/bin:/sbin:/usr/bin:/usr/sbin")
+	// Point clicfg at the same config.yaml pkg/config reads, so the serve keys
+	// (ambient_agent_watch, agent_binaries, profile) load alongside the network
+	// policy from one file.
+	cmd.Env = append(os.Environ(),
+		"HOME=/root", "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+		"INTERPOSE_SERVE_CONFIG=/var/lib/interpose/config.yaml",
+	)
 	if f, err := os.Create("/run/interpose-serve.log"); err == nil {
 		cmd.Stdout, cmd.Stderr = f, f
 	}
 	if err := cmd.Start(); err == nil {
 		time.Sleep(1500 * time.Millisecond) // let the enforcer attach its programs
+	}
+}
+
+// loadKmod loads interpose.ko (the sleepable-LSM bridge) from the rootfs if
+// present, so the in-guest enforcer gets the block-until-verdict round-trip
+// instead of synchronous EPERM. Best-effort: absent/unsupported just falls back.
+func loadKmod() {
+	f, err := os.Open("/interpose.ko")
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if err := unix.FinitModule(int(f.Fd()), "", 0); err != nil {
+		os.Stderr.WriteString("interpose-guest: finit_module interpose.ko: " + err.Error() + "\r\n")
 	}
 }
 
@@ -116,6 +141,7 @@ func main() {
 	// from the host resolve.
 	_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/bin:/sbin:/usr/bin:/usr/sbin")
 	bringUpMounts()
+	loadKmod()
 	startEnforcer()
 
 	l, err := vsock.Listen(vsockPort, nil)
