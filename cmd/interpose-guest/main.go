@@ -62,6 +62,20 @@ func bringUpMounts() {
 	_ = unix.Mount("bpf", "/sys/fs/bpf", "bpf", 0, "")
 	_ = unix.Mount("tmpfs", "/run", "tmpfs", 0, "")
 	_ = unix.Mount("tmpfs", "/tmp", "tmpfs", unix.MS_NOSUID, "mode=1777")
+
+	// Writable ephemeral layers over a READ-ONLY shared base image. The rootfs
+	// drive is the same file for every VM (no per-session copy); the workload and
+	// the in-guest enforcer write only to these tmpfs layers, which are RAM-only
+	// and discarded on teardown. The license lives under /var/lib/interpose, so
+	// read it before shadowing that dir and restore it onto the fresh tmpfs.
+	lic, _ := os.ReadFile("/var/lib/interpose/license.json")
+	for _, d := range []string{"/root", "/var/tmp", "/var/log", "/var/lib/interpose", "/home"} {
+		_ = os.MkdirAll(d, 0o755)
+		_ = unix.Mount("tmpfs", d, "tmpfs", 0, "")
+	}
+	if len(lic) > 0 {
+		_ = os.WriteFile("/var/lib/interpose/license.json", lic, 0o600)
+	}
 }
 
 // startEnforcer launches the in-guest interpose daemon so processes in this VM
