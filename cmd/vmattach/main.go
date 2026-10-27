@@ -30,6 +30,7 @@ const guestPort = 1024
 type request struct {
 	Op   string   `json:"op"`
 	Cmd  []string `json:"cmd,omitempty"`
+	Env  []string `json:"env,omitempty"`
 	Cols int      `json:"cols"`
 	Rows int      `json:"rows"`
 }
@@ -41,10 +42,18 @@ func main() {
 	}
 	uds := os.Args[1]
 	var cmd []string
+	var env []string // forwarded "KEY=VALUE" vars, taken from vmattach's own environment
 	for i := 2; i < len(os.Args); i++ {
-		if os.Args[i] == "--" {
+		switch {
+		case os.Args[i] == "--":
 			cmd = os.Args[i+1:]
-			break
+			i = len(os.Args)
+		case os.Args[i] == "-e" && i+1 < len(os.Args):
+			// forward the NAMED variable's value from our env (keeps the secret out of argv)
+			if v, ok := os.LookupEnv(os.Args[i+1]); ok {
+				env = append(env, os.Args[i+1]+"="+v)
+			}
+			i++
 		}
 	}
 
@@ -72,7 +81,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	req := request{Op: "start", Cmd: cmd, Cols: 120, Rows: 40}
+	req := request{Op: "start", Cmd: cmd, Env: env, Cols: 120, Rows: 40}
 	if err := json.NewEncoder(c).Encode(&req); err != nil { // writes the JSON line + '\n'
 		fmt.Fprintln(os.Stderr, "send request:", err)
 		os.Exit(1)

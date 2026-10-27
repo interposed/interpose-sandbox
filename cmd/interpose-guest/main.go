@@ -37,6 +37,7 @@ const vsockPort = 1024
 type request struct {
 	Op   string   `json:"op"`
 	Cmd  []string `json:"cmd"`
+	Env  []string `json:"env,omitempty"` // extra "KEY=VALUE" vars (e.g. the provider token); set RAM-only on the child, never written to the rootfs
 	Cols int      `json:"cols"`
 	Rows int      `json:"rows"`
 }
@@ -128,6 +129,7 @@ func serve(c io.ReadWriteCloser) {
 		"TERM=xterm-256color", "HOME=/root",
 		"PATH=/bin:/sbin:/usr/bin:/usr/sbin",
 	)
+	cmd.Env = append(cmd.Env, req.Env...) // token etc., RAM-only on the child
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(req.Cols), Rows: uint16(req.Rows)})
 	if err != nil {
 		_, _ = c.Write([]byte("interpose-guest: start failed: " + err.Error() + "\r\n"))
