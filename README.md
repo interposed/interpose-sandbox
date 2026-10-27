@@ -20,6 +20,23 @@ The only external enforcement dependency is [go-landlock](https://github.com/lan
   bounded. One cell = one job.
 - **`pkg/ci` + `cmd/interpose-ci`** - the governed CI runner, built on the pool (see
   below).
+- **`cmd/interpose-guest`** - the in-VM agent for the **microVM tier** (preview). It runs
+  as PID 1 inside a Firecracker guest booted on our own BPF-LSM kernel: it brings up the
+  mounts, starts the in-guest enforcer so the workload is governed at the guest kernel, and
+  serves it over vsock. The host side and the `--tier microvm` session flow live in the
+  `interpose` daemon; this repo is the guest half.
+
+## Isolation tiers
+
+Two tiers share one session flow, chosen per run so the sandbox runs anywhere and does
+more where the hardware allows:
+
+- **Process (Landlock)** - the default and the shipping tier. The workload runs through a
+  `pkg/procbox` allow-list, with no VM, on any modern Linux kernel.
+- **microVM (Firecracker)** - *preview.* The workload runs inside a Firecracker guest on
+  our own BPF-LSM kernel, with the enforcer running inside the guest and the terminal
+  bridged over vsock. It needs a host with `/dev/kvm` and is driven by the `interpose`
+  daemon's `--tier microvm`; the guest agent (`cmd/interpose-guest`) lives here.
 
 ## Governed CI
 
@@ -66,7 +83,8 @@ interpose-ci run <pipeline.json> --approve deny
 interpose-sandbox/
 ├── cmd/
 │   ├── interpose-ci/        # governed CI runner: run a pipeline, hold releases
-│   └── interpose-cell/      # per-job cell shim (the pool exec()s it; not run by hand)
+│   ├── interpose-cell/      # per-job cell shim (the pool exec()s it; not run by hand)
+│   └── interpose-guest/     # microVM tier (preview): in-VM PID 1 agent, serves over vsock
 ├── pkg/
 │   ├── procbox/             # the sandbox: pure-Go Landlock allow-list
 │   ├── cell/                # one command in a deny-default cell (procbox + cgroup v2)
@@ -84,6 +102,11 @@ with an escape suite as the CI gate (a cell can work in its allowed dir but cann
 read secrets or write outside it). The CI runner executes real pipelines with real
 dependency fetches inside governed cells, holds release-class steps for approval, and
 is validated on Ubuntu and Fedora.
+
+The **microVM tier** (preview) adds a Firecracker guest on our own BPF-LSM kernel with the
+enforcer running inside the guest; its in-VM agent is `cmd/interpose-guest`, driven by the
+`interpose` daemon's `--tier microvm`. It is proven end to end on a bare-metal KVM host but
+is not yet a packaged release feature - the guest image is still built by hand.
 
 Releases are tags; see `git tag` for the history.
 
